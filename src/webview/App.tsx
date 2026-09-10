@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
 import type { HostToWebviewMsg, SessionEvent } from "../shared/protocol";
 
@@ -124,7 +125,7 @@ function eventsToCards(events: SessionEvent[]): Card[] {
 
 function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   if (card.kind === "assistant") {
-    return <div className="md" dangerouslySetInnerHTML={{ __html: marked.parse(card.text ?? "", { async: false }) as string }} />;
+    return <div className="md" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(card.text ?? "", { async: false }) as string) }} />;
   }
   if (card.kind === "user") {
     return <div style={{ color: "var(--vscode-inputForeground)", opacity: 0.8 }}><b>You:</b> {card.text}</div>;
