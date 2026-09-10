@@ -1,3 +1,4 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-createRoot(document.getElementById("root")!).render(<h1>Justwoker Agent</h1>);
+import App from "./App";
+createRoot(document.getElementById("root")!).render(<App />);

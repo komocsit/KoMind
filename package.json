@@ -3,28 +3,63 @@
   "displayName": "Justwoker Agent",
   "publisher": "justwoker",
   "version": "0.1.0",
-  "engines": { "vscode": "^1.85.0" },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
   "main": "./dist/host/extension.js",
   "activationEvents": [],
   "contributes": {
     "viewsContainers": {
-      "activitybar": [{ "id": "justwokerAgent", "title": "Justwoker Agent", "icon": "media/icon.svg" }]
+      "activitybar": [
+        {
+          "id": "justwokerAgent",
+          "title": "Justwoker Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
     },
     "views": {
-      "justwokerAgent": [{ "type": "webview", "id": "justwokerAgent.chat", "name": "Agent Chat" }]
+      "justwokerAgent": [
+        {
+          "type": "webview",
+          "id": "justwokerAgent.chat",
+          "name": "Agent Chat"
+        }
+      ]
     },
     "commands": [
-      { "command": "justwokerAgent.setApiKey", "title": "Justwoker: Set API Key" },
-      { "command": "justwokerAgent.newSession", "title": "Justwoker: New Session" }
+      {
+        "command": "justwokerAgent.setApiKey",
+        "title": "Justwoker: Set API Key"
+      },
+      {
+        "command": "justwokerAgent.newSession",
+        "title": "Justwoker: New Session"
+      }
     ],
     "configuration": {
       "title": "Justwoker Agent",
       "properties": {
-        "justwokerAgent.baseUrl": { "type": "string", "default": "https://api.justwoker.icu" },
-        "justwokerAgent.model": { "type": "string", "default": "gpt-5.6-sol" },
-        "justwokerAgent.maxTokens": { "type": "number", "default": 4096 },
-        "justwokerAgent.autoApproveEdits": { "type": "boolean", "default": true },
-        "justwokerAgent.autoApproveTerminal": { "type": "boolean", "default": false }
+        "justwokerAgent.baseUrl": {
+          "type": "string",
+          "default": "https://api.justwoker.icu"
+        },
+        "justwokerAgent.model": {
+          "type": "string",
+          "default": "gpt-5.6-sol"
+        },
+        "justwokerAgent.maxTokens": {
+          "type": "number",
+          "default": 4096
+        },
+        "justwokerAgent.autoApproveEdits": {
+          "type": "boolean",
+          "default": true
+        },
+        "justwokerAgent.autoApproveTerminal": {
+          "type": "boolean",
+          "default": false
+        }
       }
     }
   },
@@ -35,13 +70,20 @@
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
-    "typescript": "^5.4.0",
-    "esbuild": "^0.20.0",
-    "vitest": "^1.5.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.3.0",
-    "@vscode/vsce": "^2.24.0"
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.5.0"
   },
-  "dependencies": { "@anthropic-ai/sdk": "^0.30.0", "react": "^18.3.0", "react-dom": "^18.3.0" }
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "marked": "^18.0.12",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  }
 }
