@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage("API key saved.");
       }
     }),
-    vscode.commands.registerCommand("justwokerAgent.newSession", () => provider.post({ type: "newSession" })),
+    vscode.commands.registerCommand("justwokerAgent.newSession", () => provider.newSession()),
   );
 }
 
@@ -39,6 +39,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   post(msg: HostToWebviewMsg) { void this.view?.webview.postMessage(msg); }
+
+  newSession() { this.startSession(); }
 
   resolveWebviewView(view: vscode.WebviewView) {
     this.view = view;
