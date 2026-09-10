@@ -7,8 +7,9 @@ export interface ToolContext {
   applyEdit(p: string, oldString: string, newString: string): Promise<void>;
   runTerminal(command: string, cwd: string | undefined, onOutput: (chunk: string) => void): Promise<{ exitCode: number }>;
   requestApproval(command: string, callId: string): Promise<boolean>;
-  openDiff(p: string): Promise<void>;
   workspaceRoot(): string | undefined;
+  autoApproveEdits: boolean;
+  autoApproveTerminal: boolean;
 }
 
 export interface ToolDef { name: ToolName; description: string; schema: Record<string, unknown>; }
@@ -47,15 +48,21 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
         const oldString = String(input.oldString ?? "");
         const newString = String(input.newString ?? "");
         if (!oldString) return { ok: false, output: "apply_edit error: oldString must be non-empty." };
+        if (!ctx.autoApproveEdits) {
+          const snippet = (s: string) => s.slice(0, 80);
+          const approved = await ctx.requestApproval(`Edit ${input.path}: replace "${snippet(oldString)}" with "${snippet(newString)}"`, callId);
+          if (!approved) return { ok: false, output: "User rejected this edit." };
+        }
         await ctx.applyEdit(p, oldString, newString);
-        await ctx.openDiff(p);
         return { ok: true, output: `Edited ${input.path}` };
       }
       case "run_terminal": {
         const command = String(input.command ?? "");
         if (!command) return { ok: false, output: "run_terminal error: command required." };
-        const approved = await ctx.requestApproval(command, callId);
-        if (!approved) return { ok: false, output: "User rejected this command." };
+        if (!ctx.autoApproveTerminal) {
+          const approved = await ctx.requestApproval(command, callId);
+          if (!approved) return { ok: false, output: "User rejected this command." };
+        }
         const cwd = input.cwd ? resolvePath(ctx.workspaceRoot(), String(input.cwd)) : undefined;
         let output = "";
         const { exitCode } = await ctx.runTerminal(command, cwd, (chunk) => { output += chunk; });

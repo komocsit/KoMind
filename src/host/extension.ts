@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as cp from "child_process";
 import { createProvider, type Provider } from "./provider";
-import { AgentSession } from "./agent";
+import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
@@ -60,7 +60,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "loadEvents", sessionId: id, events: [] });
   }
 
-  private makeSession(id: string): AgentSession {
+  private makeSession(id: string, initialMessages?: ConstructorParameters<typeof AgentSession>[0]["initialMessages"]): AgentSession {
     const cfg = vscode.workspace.getConfiguration("justwokerAgent");
     const baseProvider = createProvider({
       baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
@@ -90,10 +90,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       error: (message: string) => this.post({ type: "error", sessionId: id, message }),
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
     };
-    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(), store: this.store, ui });
+    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(), store: this.store, ui, initialMessages });
   }
 
   private makeToolContext(): ToolContext {
+    const cfg = vscode.workspace.getConfiguration("justwokerAgent");
     const root = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     return {
       async readFile(p) { return vscode.workspace.fs.readFile(vscode.Uri.file(p)).then((b) => Buffer.from(b).toString("utf8")); },
@@ -113,6 +114,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         edit.replace(uri, fullRange, text.replace(oldString, newString));
         const ok = await vscode.workspace.applyEdit(edit);
         if (!ok) throw new Error("Edit rejected by editor.");
+        // diff pre-edit content against the live edited file
+        const originalDoc = await vscode.workspace.openTextDocument({ content: text, language: doc.languageId });
+        await vscode.commands.executeCommand("vscode.diff", originalDoc.uri, uri, path.basename(p), { preview: true });
       },
       async runTerminal(command, cwd, onOutput) {
         return new Promise((resolve) => {
@@ -126,11 +130,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       },
       requestApproval: (command, callId) => this.approvals.request(this.currentSessionId ?? "", callId, command),
-      async openDiff(p) {
-        const uri = vscode.Uri.file(p);
-        await vscode.commands.executeCommand("vscode.diff", uri, uri, path.basename(p), { preview: true });
-      },
       workspaceRoot: root,
+      autoApproveEdits: cfg.get("autoApproveEdits", true),
+      autoApproveTerminal: cfg.get("autoApproveTerminal", false),
     };
   }
 
@@ -147,7 +149,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       case "requestSessionList": await this.sendSessionList(); break;
       case "loadSession": {
         if (!this.sessions.has(m.sessionId)) {
-          this.sessions.set(m.sessionId, this.makeSession(m.sessionId));
+          const events = await this.store.load(m.sessionId);
+          this.sessions.set(m.sessionId, this.makeSession(m.sessionId, messagesFromEvents(events)));
         }
         // always post events so the webview renders history for both fresh and cached sessions
         const events = await this.store.load(m.sessionId);

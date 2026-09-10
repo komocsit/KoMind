@@ -16,7 +16,13 @@ export class AgentSession {
   private queue: string[] = [];
   private running = false;
 
-  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi }) {}
+  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[] }) {
+    if (opts.initialMessages) this.messages.push(...opts.initialMessages);
+  }
+
+  seedFromEvents(events: SessionEvent[]): void {
+    this.messages.push(...messagesFromEvents(events));
+  }
 
   get busy() { return this.running; }
 
@@ -76,4 +82,32 @@ export class AgentSession {
       await this.opts.store.append(this.opts.sessionId, { kind: "error", message: msg, ts: Date.now() });
     }
   }
+}
+
+export function messagesFromEvents(events: SessionEvent[]): AnthropicMessage[] {
+  const messages: AnthropicMessage[] = [];
+  let textBuf: { type: "text"; text: string }[] = [];
+  let toolBuf: { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }[] = [];
+  let resultBuf: { type: "tool_result"; tool_use_id: string; content: string; is_error: boolean }[] = [];
+  const flushText = () => { if (textBuf.length) { messages.push({ role: "assistant", content: textBuf }); textBuf = []; } };
+  const flushTools = () => { if (toolBuf.length) { messages.push({ role: "assistant", content: toolBuf }); toolBuf = []; } };
+  const flushResults = () => { if (resultBuf.length) { messages.push({ role: "user", content: resultBuf }); resultBuf = []; } };
+  for (const e of events) {
+    if (e.kind === "user") {
+      flushResults(); flushText(); flushTools();
+      messages.push({ role: "user", content: [{ type: "text", text: e.text }] });
+    } else if (e.kind === "assistantText") {
+      flushResults(); flushTools();
+      textBuf.push({ type: "text", text: e.text });
+    } else if (e.kind === "toolCall") {
+      flushResults(); flushText();
+      toolBuf.push({ type: "tool_use", id: e.callId, name: e.tool, input: e.input });
+    } else if (e.kind === "toolResult") {
+      flushText(); flushTools();
+      resultBuf.push({ type: "tool_result", tool_use_id: e.callId, content: e.output, is_error: !e.ok });
+    }
+    // "error" events are not part of the model conversation
+  }
+  flushResults(); flushText(); flushTools();
+  return messages;
 }
