@@ -22,7 +22,7 @@ export const TOOL_DEFS: ToolDef[] = [
 
 export function resolvePath(workspaceRoot: string | undefined, rel: string): string {
   if (!workspaceRoot) throw new Error("No workspace folder open.");
-  const abs = path.isAbsolute(rel) ? rel : path.resolve(workspaceRoot, rel);
+  const abs = path.resolve(workspaceRoot, rel);
   const normRoot = path.resolve(workspaceRoot);
   if (abs !== normRoot && !abs.startsWith(normRoot + path.sep)) {
     throw new Error(`Path escapes workspace: ${rel}`);

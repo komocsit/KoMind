@@ -21,6 +21,9 @@ describe("resolvePath", () => {
     expect(() => resolvePath("C:/work/proj", "../outside.txt")).toThrow();
     expect(() => resolvePath("C:/work/proj", "C:/elsewhere/x.txt")).toThrow();
   });
+  it("rejects absolute paths with traversal escaping the workspace", () => {
+    expect(() => resolvePath("C:/work/proj", "C:/work/proj/../evil.txt")).toThrow();
+  });
   it("accepts relative paths inside workspace", () => {
     expect(resolvePath("C:/work/proj", "src/a.ts")).toBe(path.resolve("C:/work/proj", "src/a.ts"));
   });
