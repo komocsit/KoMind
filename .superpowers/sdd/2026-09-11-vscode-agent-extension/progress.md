@@ -14,3 +14,6 @@
 
 Scan clean apart from notes above. No spec contradictions found. Global Constraints re-checked against each task: settings prefix, defaults, SecretStorage-only keys, workspace path confinement, 60s approval timeout all carried in relevant briefs.
 
+
+Task 1: complete (commits cb5b59d..2bd5588, review clean; minors deferred: icon.svg RGBA color notation typo, package.json top-level icon missing)
+
