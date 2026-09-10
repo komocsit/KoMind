@@ -162,7 +162,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private html(webview: vscode.Webview) {
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview", "main.js"));
-    return `<!DOCTYPE html><html><body><div id="root"></div><script type="module" src="${js}"></script></body></html>`;
+    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:;">`;
+    return `<!DOCTYPE html><html><head>${csp}</head><body><div id="root"></div><script type="module" src="${js}"></script></body></html>`;
   }
 }
 
