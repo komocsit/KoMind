@@ -39,6 +39,7 @@ export type WebviewToHostMsg =
   | { type: "loadSession"; sessionId: string }
   | { type: "requestConfig" }
   | { type: "setModel"; model: string }
+  | { type: "addModel"; model: string }
   | { type: "setEffort"; effort: Effort }
   | { type: "setMode"; mode: Mode }
   | { type: "resetPermissions" }

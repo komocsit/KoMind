@@ -53,6 +53,12 @@
           "type": "string",
           "default": "gpt-5.6-sol"
         },
+        "koMind.models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Extra models to show in the model picker (merged with the list fetched from the API). Example: `[\"claude-sonnet-4-5\", \"gpt-5.5\"]`"
+        },
         "koMind.maxTokens": {
           "type": "number",
           "default": 4096

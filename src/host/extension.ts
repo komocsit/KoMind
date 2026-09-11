@@ -77,7 +77,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const settingsEffort = cfg.get<string>("effort", "medium");
     this.currentEffort = EFFORTS.includes(savedEffort as Effort) ? (savedEffort as Effort)
       : EFFORTS.includes(settingsEffort as Effort) ? (settingsEffort as Effort) : "medium";
-    this.models = [this.currentModel];
+    // base list: user-configured models from settings + current selection
+    this.models = this.mergeModels(cfg.get<string[]>("models", []));
 
     // one shared base provider — model/effort changes apply to all sessions
     this.baseProvider = createProvider({
@@ -101,11 +102,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     this.applyMode();
     this.postConfig();
-    // fetch the real model list from the API (falls back to current model on failure)
+    // fetch the real model list from the API (settings models + current are always kept)
     void this.baseProvider.listModels().then((models) => {
-      if (models.length > 0 && !models.includes(this.currentModel)) models.unshift(this.currentModel);
-      if (models.length > 0) { this.models = models; this.postConfig(); }
+      if (models.length > 0) { this.models = this.mergeModels(models); this.postConfig(); }
     });
+  }
+
+  /** union: current selection first, then extra models, then fetched — deduped */
+  private mergeModels(extra: string[]): string[] {
+    const all = [this.currentModel, ...this.extraModels(), ...extra];
+    return [...new Set(all.filter(Boolean))];
+  }
+
+  private extraModels(): string[] {
+    const fromSettings = vscode.workspace.getConfiguration("koMind").get<string[]>("models", []);
+    const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+    return [...fromSettings, ...saved];
   }
 
   private postConfig() {
@@ -277,6 +289,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.currentModel = m.model;
         this.baseProvider.setModel(m.model);
         void this.context.workspaceState.update("koMind.model", m.model);
+        this.postConfig();
+        break;
+      }
+      case "addModel": {
+        const name = m.model.trim();
+        if (!name) break;
+        const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+        if (!saved.includes(name)) void this.context.workspaceState.update("koMind.extraModels", [...saved, name]);
+        this.currentModel = name;
+        this.baseProvider.setModel(name);
+        void this.context.workspaceState.update("koMind.model", name);
+        this.models = this.mergeModels([]);
         this.postConfig();
         break;
       }

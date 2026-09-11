@@ -26,6 +26,7 @@ describe("protocol types", () => {
       { type: "retry", sessionId: "s1" },
       { type: "requestConfig" },
       { type: "setModel", model: "gpt-5.6-sol" },
+      { type: "addModel", model: "claude-sonnet-4-5" },
       { type: "setEffort", effort: "high" },
       { type: "setMode", mode: "plan" },
       { type: "resetPermissions" },

@@ -115,6 +115,16 @@ const CSS = `
   .menu-item .check { visibility: hidden; color: var(--km-accent); flex: none; }
   .menu-item.selected .check { visibility: visible; }
   .menu-item .check:empty { display: none; }
+  .menu-sep { border-top: 1px solid var(--vscode-panel-border); margin: 4px 2px; }
+  .add-model-row { display: flex; gap: 4px; padding: 2px 4px 4px; }
+  .add-model-row input {
+    flex: 1; min-width: 0; font-family: inherit; font-size: 12px;
+    color: var(--vscode-inputForeground);
+    background: var(--vscode-inputBackground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: var(--km-radius-sm); padding: 4px 8px;
+  }
+  .add-model-row input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .effort-row { display: flex; gap: 4px; padding: 2px 6px 6px; }
   .effort-row button {
     flex: 1; min-height: 26px; justify-content: center; font-size: 11.5px; font-weight: 600;
@@ -413,6 +423,8 @@ export default function App() {
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [effort, setEffort] = useState<Effort>("medium");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [addingModel, setAddingModel] = useState(false);
+  const [newModel, setNewModel] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [contextOn, setContextOn] = useState(false);
   const [mode, setMode] = useState<Mode>("build");
@@ -607,6 +619,42 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                <div className="menu-sep" />
+                {addingModel ? (
+                  <div className="add-model-row">
+                    <input
+                      autoFocus
+                      value={newModel}
+                      placeholder="model name, e.g. claude-sonnet-4-5"
+                      onChange={(e) => setNewModel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newModel.trim()) {
+                          send({ type: "addModel", model: newModel.trim() });
+                          setAddingModel(false); setNewModel(""); setMenuOpen(false);
+                        } else if (e.key === "Escape") {
+                          setAddingModel(false); setNewModel("");
+                        }
+                      }}
+                      aria-label="New model name"
+                    />
+                    <button
+                      title="Add model"
+                      disabled={!newModel.trim()}
+                      onClick={() => {
+                        if (!newModel.trim()) return;
+                        send({ type: "addModel", model: newModel.trim() });
+                        setAddingModel(false); setNewModel(""); setMenuOpen(false);
+                      }}
+                    >
+                      <IconPlus />
+                    </button>
+                  </div>
+                ) : (
+                  <button className="menu-item" onClick={() => setAddingModel(true)}>
+                    <span className="check" />
+                    <IconPlus /> Add model…
+                  </button>
+                )}
               </div>
             </>
           )}
