@@ -1,37 +1,329 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName } from "../shared/protocol";
 
 interface Card {
   kind: "user" | "assistant" | "tool" | "error";
   text?: string;
   callId?: string;
   tool?: string;
+  input?: Record<string, unknown>;
   output?: string;
+  ok?: boolean;
   pendingApproval?: string;
   approvalDone?: "approved" | "rejected";
 }
 
+const CSS = `
+  :root {
+    --km-radius: 8px;
+    --km-radius-sm: 6px;
+    --km-accent: var(--vscode-charts-green, #22c55e);
+    --km-warn: var(--vscode-charts-yellow, #eab308);
+    --km-transition: 150ms ease;
+  }
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size, 13px);
+    color: var(--vscode-foreground);
+    background: var(--vscode-sideBar-background);
+  }
+  button {
+    font-family: inherit; font-size: 12px;
+    color: var(--vscode-foreground);
+    background: var(--vscode-button-secondaryBackground, var(--vscode-inputBackground));
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm);
+    padding: 4px 10px; min-height: 26px;
+    cursor: pointer;
+    transition: background var(--km-transition), border-color var(--km-transition), opacity var(--km-transition);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  button:hover { background: var(--vscode-list-hoverBackground); }
+  button:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-color: transparent;
+  }
+  button.primary:hover { background: var(--vscode-button-hoverBackground); }
+  button.approve { color: var(--km-accent); border-color: var(--km-accent); }
+  button.approve:hover { background: color-mix(in srgb, var(--km-accent) 15%, transparent); }
+  button.reject { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+  button.reject:hover { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* Header */
+  .header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    flex: none;
+  }
+  .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; letter-spacing: 0.2px; }
+  .brand svg { color: var(--km-accent); flex: none; }
+  .header select {
+    flex: 1; min-width: 0;
+    font-family: inherit; font-size: 12px;
+    color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+    background: var(--vscode-dropdown-background, var(--vscode-inputBackground));
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+    border-radius: var(--km-radius-sm);
+    padding: 3px 6px; min-height: 26px;
+    cursor: pointer;
+  }
+
+  /* Chat scroll area */
+  .chat { flex: 1; overflow-y: auto; padding: 12px 10px; scroll-behavior: smooth; }
+
+  /* Empty state */
+  .empty {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    text-align: center; padding: 24px; opacity: 0.9;
+  }
+  .empty .logo { color: var(--km-accent); margin-bottom: 6px; }
+  .empty h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .empty p { margin: 0 0 14px; opacity: 0.7; font-size: 12px; }
+  .suggestions { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 280px; }
+  .suggestions button { justify-content: flex-start; text-align: left; font-weight: 400; }
+
+  /* User bubble */
+  .user-row { display: flex; justify-content: flex-end; margin: 10px 0; }
+  .user-bubble {
+    max-width: 85%;
+    background: color-mix(in srgb, var(--vscode-focusBorder) 22%, var(--vscode-inputBackground));
+    border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+    border-radius: var(--km-radius) var(--km-radius) 3px var(--km-radius);
+    padding: 7px 11px;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
+  /* Assistant markdown */
+  .assistant { margin: 10px 0; line-height: 1.55; }
+  .md p { margin: 6px 0; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.3; }
+  .md h1 { font-size: 16px; } .md h2 { font-size: 15px; } .md h3 { font-size: 14px; } .md h4 { font-size: 13px; }
+  .md ul, .md ol { margin: 6px 0; padding-left: 22px; }
+  .md li { margin: 2px 0; }
+  .md code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    background: var(--vscode-textCodeBlock-background);
+    border-radius: 4px; padding: 1px 4px;
+  }
+  .md pre {
+    background: var(--vscode-textCodeBlock-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm);
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .md pre code { background: none; padding: 0; font-size: 12px; line-height: 1.5; }
+  .md blockquote {
+    margin: 8px 0; padding: 2px 12px;
+    border-left: 3px solid var(--vscode-panel-border);
+    opacity: 0.85;
+  }
+  .md a { color: var(--vscode-textLink-foreground); }
+  .md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+  .md th, .md td { border: 1px solid var(--vscode-panel-border); padding: 4px 8px; text-align: left; }
+  .md th { background: var(--vscode-list-hoverBackground); }
+  .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
+
+  /* Streaming dots */
+  .dots { display: inline-flex; gap: 4px; padding: 8px 2px; }
+  .dots span {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--vscode-foreground); opacity: 0.4;
+    animation: km-bounce 1.2s infinite ease-in-out;
+  }
+  .dots span:nth-child(2) { animation-delay: 0.15s; }
+  .dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes km-bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 0.9; }
+  }
+
+  /* Tool card */
+  .tool-card {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius);
+    margin: 8px 0; overflow: hidden;
+    background: color-mix(in srgb, var(--vscode-inputBackground) 55%, transparent);
+    transition: border-color var(--km-transition);
+  }
+  .tool-card.running { border-color: color-mix(in srgb, var(--vscode-focusBorder) 50%, var(--vscode-panel-border)); }
+  .tool-card.awaiting { border-color: color-mix(in srgb, var(--km-warn) 55%, var(--vscode-panel-border)); }
+  .tool-card.done-ok { border-color: color-mix(in srgb, var(--km-accent) 40%, var(--vscode-panel-border)); }
+  .tool-card.done-err { border-color: color-mix(in srgb, var(--vscode-errorForeground) 45%, var(--vscode-panel-border)); }
+  .tool-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+  }
+  .tool-name { font-weight: 600; }
+  .tool-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; opacity: 0.9; }
+  .tool-status svg { flex: none; }
+  .spin { animation: km-spin 1s linear infinite; }
+  @keyframes km-spin { to { transform: rotate(360deg); } }
+  .tool-body { padding: 0 10px 8px; }
+  .tool-args { font-size: 11px; opacity: 0.65; margin-top: -2px; margin-bottom: 4px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmd-block {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    background: var(--vscode-textCodeBlock-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm);
+    padding: 6px 10px; margin: 6px 0;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .approval-row { display: flex; gap: 8px; margin-top: 8px; }
+  .approval-row button { flex: 1; justify-content: center; font-weight: 600; }
+  .tool-output {
+    margin: 6px 0 0;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    max-height: 220px; overflow-y: auto;
+    background: var(--vscode-textCodeBlock-background);
+    border-radius: var(--km-radius-sm);
+    padding: 8px 10px;
+  }
+
+  /* Error card */
+  .error-card {
+    display: flex; align-items: flex-start; gap: 8px;
+    border: 1px solid var(--vscode-errorForeground);
+    border-radius: var(--km-radius);
+    background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
+    color: var(--vscode-errorForeground);
+    padding: 8px 10px; margin: 8px 0;
+    font-size: 12px;
+  }
+  .error-card .msg { flex: 1; word-break: break-word; }
+
+  /* Composer */
+  .composer { flex: none; padding: 8px 10px 10px; border-top: 1px solid var(--vscode-panel-border); }
+  .composer-row { display: flex; gap: 6px; align-items: flex-end; }
+  .composer textarea {
+    flex: 1; resize: none;
+    font-family: inherit; font-size: 13px; line-height: 1.5;
+    color: var(--vscode-inputForeground);
+    background: var(--vscode-inputBackground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: var(--km-radius);
+    padding: 8px 10px;
+    transition: border-color var(--km-transition);
+  }
+  .composer textarea:focus { border-color: var(--vscode-focusBorder); }
+  .composer textarea::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.8; }
+  .composer .send-btn {
+    min-height: 34px; min-width: 38px; justify-content: center;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-color: transparent; border-radius: var(--km-radius);
+  }
+  .composer .send-btn:hover { background: var(--vscode-button-hoverBackground); }
+  .composer .hint { margin-top: 5px; font-size: 10.5px; opacity: 0.55; text-align: center; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+    .chat { scroll-behavior: auto; }
+  }
+`;
+
+/* ---------- Icons (inline SVG, no emoji) ---------- */
+const iconProps = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+
+const IconSpark = (p: { size?: number }) => (
+  <svg {...iconProps} width={p.size ?? 14} height={p.size ?? 14}>
+    <path d="M12 3l1.9 5.7L19.6 10.6l-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9L12 3z" />
+    <path d="M19 15l.9 2.6L22.5 18.5l-2.6.9L19 22l-.9-2.6L15.5 18.5l2.6-.9L19 15z" />
+  </svg>
+);
+const IconPlus = () => (<svg {...iconProps}><path d="M12 5v14M5 12h14" /></svg>);
+const IconSend = () => (<svg {...iconProps} width={15} height={15}><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>);
+const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20 6L9 17l-5-5" /></svg>);
+const IconX = () => (<svg {...iconProps} width={13} height={13}><path d="M18 6L6 18M6 6l12 12" /></svg>);
+const IconClock = () => (<svg {...iconProps} width={13} height={13}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>);
+const IconAlert = () => (<svg {...iconProps} width={15} height={15}><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /><path d="M12 9v4M12 17h.01" /></svg>);
+const IconSpinner = () => (<svg {...iconProps} width={13} height={13} className="spin"><path d="M21 12a9 9 0 11-6.2-8.56" /></svg>);
+const IconFile = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
+const IconFolder = () => (<svg {...iconProps} width={13} height={13}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>);
+const IconPencil = () => (<svg {...iconProps} width={13} height={13}><path d="M17 3a2.8 2.8 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>);
+const IconTerminal = () => (<svg {...iconProps} width={13} height={13}><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>);
+const IconRotate = () => (<svg {...iconProps} width={13} height={13}><path d="M1 4v6h6" /><path d="M3.5 15a9 9 0 102.1-9.4L1 10" /></svg>);
+
+function toolIcon(tool?: string) {
+  switch (tool) {
+    case "read_file": return <IconFile />;
+    case "list_dir": return <IconFolder />;
+    case "apply_edit": return <IconPencil />;
+    case "run_terminal": return <IconTerminal />;
+    default: return <IconTerminal />;
+  }
+}
+
+const TOOL_LABEL: Record<string, string> = {
+  read_file: "Read file",
+  list_dir: "List directory",
+  apply_edit: "Edit file",
+  run_terminal: "Terminal command",
+};
+
+/* ---------- Markdown with memoized sanitized parse ---------- */
+const Markdown = React.memo(function Markdown({ text }: { text: string }) {
+  const html = useMemo(
+    () => DOMPurify.sanitize(marked.parse(text, { async: false }) as string),
+    [text]
+  );
+  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
+/* ---------- App ---------- */
 export default function App() {
   const [cards, setCards] = useState<Card[]>([]);
   const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
   const [sessionList, setSessionList] = useState<{ id: string; firstUserMessage: string }[]>([]);
   const sessionIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
 
   useEffect(() => {
     onHostMessage((m: HostToWebviewMsg) => {
+      switch (m.type) {
+        case "turnComplete": setStreaming(false); break;
+        case "error": setStreaming(false); break;
+      }
       setCards((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
         switch (m.type) {
           case "newSession":
             sessionIdRef.current = "";
+            setStreaming(false);
             return [];
           case "loadEvents":
             sessionIdRef.current = m.sessionId;
+            setStreaming(false);
             return eventsToCards(m.events);
           case "textDelta":
             sessionIdRef.current = m.sessionId;
@@ -39,7 +331,7 @@ export default function App() {
             else next.push({ kind: "assistant", text: m.text });
             return next;
           case "toolCall":
-            next.push({ kind: "tool", callId: m.callId, tool: m.tool });
+            next.push({ kind: "tool", callId: m.callId, tool: m.tool, input: m.input });
             return next;
           case "approvalRequest":
             return next.map((c) => (c.callId === m.callId ? { ...c, pendingApproval: m.command } : c));
@@ -50,7 +342,7 @@ export default function App() {
                 : c
             );
           case "toolResult":
-            return next.map((c) => (c.callId === m.callId ? { ...c, output: m.output } : c));
+            return next.map((c) => (c.callId === m.callId ? { ...c, output: m.output, ok: m.ok } : c));
           case "error":
             next.push({ kind: "error", text: m.message });
             return next;
@@ -67,47 +359,102 @@ export default function App() {
     send({ type: "requestSessionList" });
   }, []);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [cards]);
+  useEffect(() => {
+    if (nearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [cards, streaming]);
 
-  const submit = () => {
-    if (!input.trim() || !sessionIdRef.current) return;
-    send({ type: "userMessage", sessionId: sessionIdRef.current, text: input });
-    setCards((p) => [...p, { kind: "user", text: input }]);
+  const onChatScroll = () => {
+    const el = chatRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  const submit = (text?: string) => {
+    const value = (text ?? input).trim();
+    if (!value || !sessionIdRef.current) return;
+    send({ type: "userMessage", sessionId: sessionIdRef.current, text: value });
+    setCards((p) => [...p, { kind: "user", text: value }]);
     setInput("");
+    setStreaming(true);
+    nearBottomRef.current = true;
   };
 
   const onRetry = () => {
     if (sessionIdRef.current) send({ type: "retry", sessionId: sessionIdRef.current });
   };
 
+  const suggestions = [
+    "Explain the structure of this project",
+    "Read a.txt and summarize it",
+    "Refactor a function for clarity",
+  ];
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <div style={{ padding: "4px", borderBottom: "1px solid var(--vscode-panel-border)", display: "flex", gap: "4px" }}>
-        <button onClick={() => send({ type: "newSessionRequest" })}>+ New</button>
+    <div className="app">
+      <style>{CSS}</style>
+
+      <div className="header">
+        <span className="brand"><IconSpark size={15} /> KoMind</span>
         <select
           onChange={(e) => { if (e.target.value) send({ type: "loadSession", sessionId: e.target.value }); e.target.value = ""; }}
           value=""
+          title="Load a previous session"
         >
-          <option value="">Sessions…</option>
+          <option value="">History…</option>
           {sessionList.map((s) => (
             <option key={s.id} value={s.id}>{s.firstUserMessage.slice(0, 40)}</option>
           ))}
         </select>
+        <button onClick={() => send({ type: "newSessionRequest" })} title="Start a new session">
+          <IconPlus /> New
+        </button>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
-        {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
+
+      <div className="chat" ref={chatRef} onScroll={onChatScroll}>
+        {cards.length === 0 && !streaming ? (
+          <div className="empty">
+            <span className="logo"><IconSpark size={28} /></span>
+            <h2>KoMind</h2>
+            <p>Your coding agent — reads files, applies edits, runs approved commands.</p>
+            <div className="suggestions">
+              {suggestions.map((s) => (
+                <button key={s} onClick={() => submit(s)}>{s}</button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
+            {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
+              <div className="dots" aria-label="Thinking"><span /><span /><span /></div>
+            )}
+          </>
+        )}
         <div ref={bottomRef} />
       </div>
-      <div style={{ padding: "8px", display: "flex", gap: "4px" }}>
-        <textarea
-          style={{ flex: 1, resize: "none", color: "var(--vscode-inputForeground)", background: "var(--vscode-inputBackground)", border: "1px solid var(--vscode-input-border, var(--vscode-panel-border))" }}
-          rows={3}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
-          placeholder="Ask the agent… (Enter to send, Shift+Enter for newline)"
-        />
-        <button onClick={submit}>Send</button>
+
+      <div className="composer">
+        <div className="composer-row">
+          <textarea
+            rows={2}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
+            placeholder="Ask KoMind anything…"
+            aria-label="Message KoMind"
+          />
+          <button
+            className="send-btn"
+            onClick={() => submit()}
+            disabled={!input.trim() || !sessionIdRef.current}
+            title="Send (Enter)"
+          >
+            <IconSend />
+          </button>
+        </div>
+        <div className="hint">Enter to send · Shift+Enter for a new line</div>
       </div>
     </div>
   );
@@ -118,36 +465,77 @@ function eventsToCards(events: SessionEvent[]): Card[] {
     if (e.kind === "user") return { kind: "user" as const, text: e.text };
     if (e.kind === "assistantText") return { kind: "assistant" as const, text: e.text };
     if (e.kind === "error") return { kind: "error" as const, text: e.message };
-    if (e.kind === "toolCall") return { kind: "tool" as const, callId: e.callId, tool: e.tool };
-    return { kind: "tool" as const, callId: e.callId, output: e.output };
+    if (e.kind === "toolCall") return { kind: "tool" as const, callId: e.callId, tool: e.tool as ToolName, input: e.input };
+    return { kind: "tool" as const, callId: e.callId, output: e.output, ok: e.ok };
   });
 }
 
 function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   if (card.kind === "assistant") {
-    return <div className="md" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(card.text ?? "", { async: false }) as string) }} />;
-  }
-  if (card.kind === "user") {
-    return <div style={{ color: "var(--vscode-inputForeground)", opacity: 0.8 }}><b>You:</b> {card.text}</div>;
-  }
-  if (card.kind === "error") {
     return (
-      <div style={{ color: "var(--vscode-errorForeground)", border: "1px solid var(--vscode-errorForeground)", padding: "4px", margin: "4px 0" }}>
-        {card.text} <button onClick={onRetry}>Retry</button>
+      <div className="assistant">
+        <Markdown text={card.text ?? ""} />
       </div>
     );
   }
+  if (card.kind === "user") {
+    return (
+      <div className="user-row">
+        <div className="user-bubble">{card.text}</div>
+      </div>
+    );
+  }
+  if (card.kind === "error") {
+    return (
+      <div className="error-card" role="alert">
+        <IconAlert />
+        <span className="msg">{card.text}</span>
+        <button onClick={onRetry} title="Retry the last request"><IconRotate /> Retry</button>
+      </div>
+    );
+  }
+
+  /* Tool card */
+  const rejected = card.approvalDone === "rejected";
+  const awaiting = Boolean(card.pendingApproval);
+  const running = card.output === undefined && !awaiting && !rejected;
+  const doneOk = card.output !== undefined && card.ok === true;
+  const doneErr = (card.output !== undefined && card.ok === false) || rejected;
+  const statusClass = awaiting ? "awaiting" : running ? "running" : doneErr ? "done-err" : doneOk ? "done-ok" : "";
+  const statusIcon = awaiting ? <IconClock /> : running ? <IconSpinner /> : rejected ? <IconX /> : doneErr ? <IconX /> : <IconCheck />;
+  const statusText = awaiting ? "Awaiting approval" : running ? "Running" : rejected ? "Rejected" : doneErr ? "Failed" : "Done";
+  const statusColor = awaiting ? "var(--km-warn)" : doneErr || rejected ? "var(--vscode-errorForeground)" : doneOk ? "var(--km-accent)" : "var(--vscode-foreground)";
+
+  const args = card.input?.path ? String(card.input.path) : "";
+
   return (
-    <div style={{ border: "1px solid var(--vscode-panel-border)", padding: "6px", margin: "4px 0", fontFamily: "monospace", fontSize: "12px" }}>
-      <div>🔧 {card.tool} {card.pendingApproval ? "— awaiting approval" : ""} {card.approvalDone ? `— ${card.approvalDone}` : ""}</div>
+    <div className={`tool-card ${statusClass}`}>
+      <div className="tool-head">
+        {toolIcon(card.tool)}
+        <span className="tool-name">{TOOL_LABEL[card.tool ?? ""] ?? card.tool}</span>
+        <span className="tool-status" style={{ color: statusColor }}>
+          {statusIcon} {statusText}
+        </span>
+      </div>
+      {args && <div className="tool-body"><div className="tool-args" title={args}>{args}</div></div>}
       {card.pendingApproval && (
-        <div style={{ marginTop: "4px" }}>
-          <code>{card.pendingApproval}</code>
-          <button onClick={() => send({ type: "approve", callId: card.callId!, approved: true })}>Approve</button>{" "}
-          <button onClick={() => send({ type: "approve", callId: card.callId!, approved: false })}>Reject</button>
+        <div className="tool-body">
+          <div className="cmd-block">{card.pendingApproval}</div>
+          <div className="approval-row">
+            <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true })}>
+              <IconCheck /> Approve
+            </button>
+            <button className="reject" onClick={() => send({ type: "approve", callId: card.callId!, approved: false })}>
+              <IconX /> Reject
+            </button>
+          </div>
         </div>
       )}
-      {card.output && <pre style={{ whiteSpace: "pre-wrap", maxHeight: "200px", overflowY: "auto" }}>{card.output}</pre>}
+      {card.output !== undefined && (
+        <div className="tool-body">
+          <pre className="tool-output">{card.output}</pre>
+        </div>
+      )}
     </div>
   );
 }
