@@ -74,11 +74,11 @@ const CSS = `
   .header .spacer { flex: 1; }
   .icon-btn { padding: 4px 7px; min-height: 28px; }
 
-  /* Controls row: model/effort menu + repo context toggle */
+  /* Controls row (bottom, above composer): model/effort menu + repo context toggle */
   .controls {
     display: flex; align-items: center; gap: 6px;
-    padding: 0 10px 8px;
-    border-bottom: 1px solid var(--vscode-panel-border);
+    padding: 8px 10px 0;
+    border-top: 1px solid var(--vscode-panel-border);
     flex: none; position: relative;
   }
   .picker-wrap { position: relative; flex: 1; min-width: 0; }
@@ -91,16 +91,16 @@ const CSS = `
   .picker-btn .chev { transition: transform var(--km-transition); flex: none; }
   .picker-btn .chev.open { transform: rotate(180deg); }
   .picker-menu {
-    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    position: absolute; bottom: calc(100% + 4px); left: 0; right: 0;
     background: var(--vscode-editorWidget-background, var(--vscode-inputBackground));
     border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
     border-radius: var(--km-radius);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.35);
     z-index: 60; padding: 4px;
     animation: km-menu-in 130ms ease;
     max-height: 320px; overflow-y: auto;
   }
-  @keyframes km-menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  @keyframes km-menu-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   .menu-section {
     font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
     opacity: 0.55; padding: 6px 8px 3px;
@@ -573,6 +573,56 @@ export default function App() {
         </button>
       </div>
 
+      {historyOpen && (
+        <div className="history-panel">
+          <div className="history-head">
+            <IconHistory /> Chat history
+            <button className="icon-btn" onClick={() => setHistoryOpen(false)} title="Back to chat">
+              <IconChevronLeft />
+            </button>
+          </div>
+          <div className="history-list">
+            {sessionList.length === 0 ? (
+              <div className="history-empty">No previous sessions yet.</div>
+            ) : (
+              sessionList.map((s) => (
+                <button
+                  key={s.id}
+                  className="history-item"
+                  title={s.firstUserMessage}
+                  onClick={() => { send({ type: "loadSession", sessionId: s.id }); setHistoryOpen(false); }}
+                >
+                  {s.firstUserMessage.slice(0, 60)}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="chat" ref={chatRef} onScroll={onChatScroll}>
+        {cards.length === 0 && !streaming ? (
+          <div className="empty">
+            <img src={logoUrl} alt="KoMind logo" className="logo-img" />
+            <h2>KoMind</h2>
+            <p>Your coding agent — reads files, applies edits, runs approved commands.</p>
+            <div className="suggestions">
+              {suggestions.map((s) => (
+                <button key={s} onClick={() => submit(s)}>{s}</button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
+            {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
+              <div className="dots" aria-label="Thinking"><span /><span /><span /></div>
+            )}
+          </>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
       <div className="controls">
         <div className="picker-wrap">
           <button
@@ -685,56 +735,6 @@ export default function App() {
             Build
           </button>
         </div>
-      </div>
-
-      {historyOpen && (
-        <div className="history-panel">
-          <div className="history-head">
-            <IconHistory /> Chat history
-            <button className="icon-btn" onClick={() => setHistoryOpen(false)} title="Back to chat">
-              <IconChevronLeft />
-            </button>
-          </div>
-          <div className="history-list">
-            {sessionList.length === 0 ? (
-              <div className="history-empty">No previous sessions yet.</div>
-            ) : (
-              sessionList.map((s) => (
-                <button
-                  key={s.id}
-                  className="history-item"
-                  title={s.firstUserMessage}
-                  onClick={() => { send({ type: "loadSession", sessionId: s.id }); setHistoryOpen(false); }}
-                >
-                  {s.firstUserMessage.slice(0, 60)}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="chat" ref={chatRef} onScroll={onChatScroll}>
-        {cards.length === 0 && !streaming ? (
-          <div className="empty">
-            <img src={logoUrl} alt="KoMind logo" className="logo-img" />
-            <h2>KoMind</h2>
-            <p>Your coding agent — reads files, applies edits, runs approved commands.</p>
-            <div className="suggestions">
-              {suggestions.map((s) => (
-                <button key={s} onClick={() => submit(s)}>{s}</button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <>
-            {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
-            {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
-              <div className="dots" aria-label="Thinking"><span /><span /><span /></div>
-            )}
-          </>
-        )}
-        <div ref={bottomRef} />
       </div>
 
       <div className="composer">
