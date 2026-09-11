@@ -27,6 +27,7 @@ export type HostToWebviewMsg =
   | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number }[] }
   | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
   | { type: "config"; model: string; models: string[]; effort: Effort; mode: Mode; alwaysAllow: { terminal: boolean; edits: boolean } }
+  | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean }
   | { type: "attachments"; files: FileAttachment[] }
   | { type: "contextEnabled"; enabled: boolean };
 
@@ -40,6 +41,10 @@ export type WebviewToHostMsg =
   | { type: "requestConfig" }
   | { type: "setModel"; model: string }
   | { type: "addModel"; model: string }
+  | { type: "removeModel"; model: string }
+  | { type: "requestSettings" }
+  | { type: "updateSettings"; baseUrl?: string; maxTokens?: number; autoApproveEdits?: boolean; autoApproveTerminal?: boolean }
+  | { type: "setApiKey" }
   | { type: "setEffort"; effort: Effort }
   | { type: "setMode"; mode: Mode }
   | { type: "resetPermissions" }

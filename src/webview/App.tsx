@@ -125,6 +125,57 @@ const CSS = `
     border-radius: var(--km-radius-sm); padding: 4px 8px;
   }
   .add-model-row input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+  /* Settings popup */
+  .settings-overlay {
+    position: absolute; inset: 0; z-index: 80;
+    background: rgba(0,0,0,0.45);
+    display: flex; align-items: center; justify-content: center;
+    animation: km-fade-in 120ms ease;
+  }
+  @keyframes km-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  .settings-panel {
+    width: min(94%, 420px); max-height: 88%;
+    display: flex; flex-direction: column;
+    background: var(--vscode-editorWidget-background, var(--vscode-inputBackground));
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+    border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    animation: km-menu-in 130ms ease;
+  }
+  .settings-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; font-weight: 600; font-size: 13px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+  }
+  .settings-head button { margin-left: auto; }
+  .settings-body { padding: 10px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field > label { font-size: 11.5px; font-weight: 600; opacity: 0.85; }
+  .field input[type="text"], .field input:not([type]), .field input[type="number"] {
+    font-family: inherit; font-size: 12.5px;
+    color: var(--vscode-inputForeground);
+    background: var(--vscode-inputBackground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: var(--km-radius-sm);
+    padding: 6px 9px; min-height: 28px;
+  }
+  .field input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .field .row { display: flex; align-items: center; gap: 8px; }
+  .apikey-status { font-size: 12px; opacity: 0.85; flex: 1; }
+  .apikey-status.ok { color: var(--km-accent); }
+  .apikey-status.none { color: var(--vscode-errorForeground); }
+  .check-row { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+  .check-row input { margin-top: 2px; accent-color: var(--vscode-button-background); }
+  .check-row small { display: block; opacity: 0.6; font-size: 11px; font-weight: 400; }
+  .model-list { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  .muted { opacity: 0.6; font-size: 11.5px; }
+  .settings-foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 10px 12px; border-top: 1px solid var(--vscode-panel-border);
+  }
+  .settings-foot .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+  .settings-foot .primary:hover { background: var(--vscode-button-hoverBackground); }
   .effort-row { display: flex; gap: 4px; padding: 2px 6px 6px; }
   .effort-row button {
     flex: 1; min-height: 26px; justify-content: center; font-size: 11.5px; font-weight: 600;
@@ -366,6 +417,13 @@ const IconPlus = () => (<svg {...iconProps}><path d="M12 5v14M5 12h14" /></svg>)
 const IconHistory = () => (<svg {...iconProps} width={15} height={15}><path d="M3 3v6h6" /><path d="M3.5 13a9 9 0 102.6-8.4L3 7" /><path d="M12 8v4l3 2" /></svg>);
 const IconChevronLeft = () => (<svg {...iconProps} width={14} height={14}><path d="M15 18l-6-6 6-6" /></svg>);
 const IconChevronDown = () => (<svg {...iconProps} width={13} height={13}><path d="M6 9l6 6 6-6" /></svg>);
+const IconGear = () => (
+  <svg {...iconProps} width={15} height={15}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h.08a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51h.08a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.08a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
+  </svg>
+);
+const IconTrash = () => (<svg {...iconProps} width={12} height={12}><path d="M3 6h18" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" /><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>);
 const IconPaperclip = () => (<svg {...iconProps} width={14} height={14}><path d="M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>);
 const IconBranch = () => (<svg {...iconProps} width={14} height={14}><path d="M6 3v12" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 01-9 9" /></svg>);
 const IconSparkMini = () => (
@@ -429,6 +487,8 @@ export default function App() {
   const [contextOn, setContextOn] = useState(false);
   const [mode, setMode] = useState<Mode>("build");
   const [alwaysAllow, setAlwaysAllow] = useState({ terminal: false, edits: false });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<{ baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean } | null>(null);
   const sessionIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -495,6 +555,9 @@ export default function App() {
           case "contextEnabled":
             setContextOn(m.enabled);
             return next;
+          case "settings":
+            setSettings(m);
+            return next;
           default:
             return next;
         }
@@ -502,6 +565,7 @@ export default function App() {
     });
     send({ type: "requestSessionList" });
     send({ type: "requestConfig" });
+    send({ type: "requestSettings" });
   }, []);
 
   useEffect(() => {
@@ -571,6 +635,9 @@ export default function App() {
         <button className="icon-btn" onClick={() => { setHistoryOpen(false); send({ type: "newSessionRequest" }); }} title="New session">
           <IconPlus />
         </button>
+        <button className="icon-btn" onClick={() => { setSettingsOpen(true); send({ type: "requestSettings" }); }} title="Settings">
+          <IconGear />
+        </button>
       </div>
 
       {historyOpen && (
@@ -598,6 +665,14 @@ export default function App() {
             )}
           </div>
         </div>
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onAddModel={(name) => { send({ type: "addModel", model: name }); send({ type: "requestSettings" }); }}
+        />
       )}
 
       <div className="chat" ref={chatRef} onScroll={onChatScroll}>
@@ -792,8 +867,128 @@ export default function App() {
   );
 }
 
-function eventsToCards(events: SessionEvent[]): Card[] {
-  return events.map((e) => {
+/* ---------- Settings popup ---------- */
+interface SettingsShape {
+  baseUrl: string;
+  maxTokens: number;
+  autoApproveEdits: boolean;
+  autoApproveTerminal: boolean;
+  models: string[];
+  apiKeySet: boolean;
+}
+
+function SettingsPanel({ settings, onClose, onAddModel }: {
+  settings: SettingsShape | null;
+  onClose: () => void;
+  onAddModel: (name: string) => void;
+}) {
+  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? "");
+  const [maxTokens, setMaxTokens] = useState(settings?.maxTokens ?? 4096);
+  const [autoApproveEdits, setAutoApproveEdits] = useState(settings?.autoApproveEdits ?? true);
+  const [autoApproveTerminal, setAutoApproveTerminal] = useState(settings?.autoApproveTerminal ?? false);
+  const [newModel, setNewModel] = useState("");
+  const dirty = settings !== null && (
+    baseUrl !== settings.baseUrl || maxTokens !== settings.maxTokens ||
+    autoApproveEdits !== settings.autoApproveEdits || autoApproveTerminal !== settings.autoApproveTerminal
+  );
+
+  const save = () => {
+    send({
+      type: "updateSettings",
+      baseUrl, maxTokens: Number(maxTokens), autoApproveEdits, autoApproveTerminal,
+    });
+    onClose();
+  };
+
+  return (
+    <div className="settings-overlay" onClick={onClose}>
+      <div className="settings-panel" role="dialog" aria-label="KoMind settings" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-head">
+          <IconGear /> Settings
+          <button className="icon-btn" onClick={onClose} title="Close (Esc)"><IconX /></button>
+        </div>
+        <div className="settings-body">
+          <div className="field">
+            <label htmlFor="km-apikey">API key</label>
+            <div className="row">
+              <span className={`apikey-status ${settings?.apiKeySet ? "ok" : "none"}`}>
+                {settings?.apiKeySet ? "•••••••• (set)" : "Not set"}
+              </span>
+              <button onClick={() => send({ type: "setApiKey" })}>
+                {settings?.apiKeySet ? "Replace" : "Set key"}
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="km-baseurl">API base URL (Anthropic-compatible)</label>
+            <input id="km-baseurl" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.justwoker.icu" />
+          </div>
+          <div className="field">
+            <label htmlFor="km-maxtokens">Max tokens per completion</label>
+            <input id="km-maxtokens" type="number" min={256} max={100000} step={256} value={maxTokens} onChange={(e) => setMaxTokens(Number(e.target.value))} />
+          </div>
+          <div className="field">
+            <label className="check-row" htmlFor="km-edits">
+              <input id="km-edits" type="checkbox" checked={autoApproveEdits} onChange={(e) => setAutoApproveEdits(e.target.checked)} />
+              <span>
+                <b>Apply file edits automatically</b>
+                <small>When off, every edit needs approval</small>
+              </span>
+            </label>
+          </div>
+          <div className="field">
+            <label className="check-row" htmlFor="km-terminal">
+              <input id="km-terminal" type="checkbox" checked={autoApproveTerminal} onChange={(e) => setAutoApproveTerminal(e.target.checked)} />
+              <span>
+                <b>Run terminal commands automatically</b>
+                <small>When off, every command needs approval</small>
+              </span>
+            </label>
+          </div>
+          <div className="field">
+            <label>Extra models</label>
+            {settings && settings.models.length > 0 ? (
+              <div className="model-list">
+                {settings.models.map((m) => (
+                  <span key={m} className="attach-chip">
+                    <span className="n">{m}</span>
+                    <button title={`Remove ${m}`} onClick={() => send({ type: "removeModel", model: m })} aria-label={`Remove model ${m}`}>
+                      <IconX />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <small className="muted">No extra models added yet.</small>
+            )}
+            <div className="add-model-row">
+              <input
+                value={newModel}
+                placeholder="model name, e.g. claude-sonnet-4-5"
+                onChange={(e) => setNewModel(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && newModel.trim()) { onAddModel(newModel.trim()); setNewModel(""); } }}
+                aria-label="Add model"
+              />
+              <button
+                title="Add model"
+                disabled={!newModel.trim()}
+                onClick={() => { if (!newModel.trim()) return; onAddModel(newModel.trim()); setNewModel(""); }}
+              >
+                <IconPlus />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="settings-foot">
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={save} disabled={!dirty}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function eventsToCards(events: SessionEvent[]): Card[] {  return events.map((e) => {
     if (e.kind === "user") return { kind: "user" as const, text: e.text };
     if (e.kind === "assistantText") return { kind: "assistant" as const, text: e.text };
     if (e.kind === "error") return { kind: "error" as const, text: e.message };

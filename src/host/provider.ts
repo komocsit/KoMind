@@ -14,6 +14,8 @@ export interface Provider {
   setKey(key: string): void;
   setModel(model: string): void;
   setEffort(effort: Effort): void;
+  setBaseUrl(url: string): void;
+  setMaxTokens(maxTokens: number): void;
   listModels(): Promise<string[]>;
 }
 
@@ -84,6 +86,11 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
 
   function setModel(model: string): void { cfg = { ...cfg, model }; }
   function setEffort(effort: Effort): void { cfg = { ...cfg, effort }; }
+  function setBaseUrl(url: string): void {
+    cfg = { ...cfg, baseUrl: url };
+    if (!sdk) client = new Anthropic({ baseURL: url, apiKey: cfg.apiKey });
+  }
+  function setMaxTokens(maxTokens: number): void { cfg = { ...cfg, maxTokens }; }
 
   async function listModels(): Promise<string[]> {
     try {
@@ -100,5 +107,5 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     }
   }
 
-  return { streamTurn, setKey, setModel, setEffort, listModels };
+  return { streamTurn, setKey, setModel, setEffort, setBaseUrl, setMaxTokens, listModels };
 }

@@ -20,13 +20,6 @@ export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("koMind.chat", provider),
-    vscode.commands.registerCommand("koMind.setApiKey", async () => {
-      const key = await vscode.window.showInputBox({ password: true, prompt: "API key for the KoMind API (api.justwoker.icu)" });
-      if (key) {
-        await context.secrets.store("koMind.apiKey", key);
-        vscode.window.showInformationMessage("KoMind API key saved.");
-      }
-    }),
     vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
     vscode.commands.registerCommand("koMind.resetPermissions", () => provider.resetPermissions()),
   );
@@ -53,6 +46,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   post(msg: HostToWebviewMsg) { void this.view?.webview.postMessage(msg); }
 
   newSession() { this.startSession(); }
+
+  async promptApiKey(): Promise<void> {
+    const key = await vscode.window.showInputBox({ password: true, prompt: "API key for the KoMind API" });
+    if (key) {
+      await this.context.secrets.store("koMind.apiKey", key);
+      vscode.window.showInformationMessage("KoMind API key saved.");
+    }
+  }
+
+  private postSettings() {
+    const cfg = vscode.workspace.getConfiguration("koMind");
+    this.post({
+      type: "settings",
+      baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
+      maxTokens: cfg.get("maxTokens", 4096),
+      autoApproveEdits: cfg.get("autoApproveEdits", true),
+      autoApproveTerminal: cfg.get("autoApproveTerminal", false),
+      models: this.extraModels(),
+      apiKeySet: false,
+    });
+    // apiKeySet needs an async check — send a corrected snapshot after
+    void this.context.secrets.get("koMind.apiKey").then((key) => {
+      this.post({
+        type: "settings",
+        baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
+        maxTokens: cfg.get("maxTokens", 4096),
+        autoApproveEdits: cfg.get("autoApproveEdits", true),
+        autoApproveTerminal: cfg.get("autoApproveTerminal", false),
+        models: this.extraModels(),
+        apiKeySet: Boolean(key),
+      });
+    });
+  }
 
   resetPermissions() {
     this.alwaysAllow = { terminal: false, edits: false };
@@ -153,6 +179,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       setKey: (k: string) => baseProvider.setKey(k),
       setModel: (m: string) => baseProvider.setModel(m),
+      setBaseUrl: (u: string) => baseProvider.setBaseUrl(u),
+      setMaxTokens: (n: number) => baseProvider.setMaxTokens(n),
       setEffort: (e: Effort) => baseProvider.setEffort(e),
       listModels: () => baseProvider.listModels(),
     };
@@ -309,6 +337,37 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.baseProvider.setEffort(m.effort);
         void this.context.workspaceState.update("koMind.effort", m.effort);
         this.postConfig();
+        break;
+      }
+      case "removeModel": {
+        const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+        const next = saved.filter((x) => x !== m.model);
+        void this.context.workspaceState.update("koMind.extraModels", next);
+        this.models = this.mergeModels([]);
+        this.postConfig();
+        this.postSettings();
+        break;
+      }
+      case "requestSettings": this.postSettings(); break;
+      case "updateSettings": {
+        const cfg = vscode.workspace.getConfiguration("koMind");
+        const targets = vscode.ConfigurationTarget.Global;
+        if (m.baseUrl !== undefined && m.baseUrl.trim()) {
+          await cfg.update("baseUrl", m.baseUrl.trim(), targets);
+          this.baseProvider.setBaseUrl(m.baseUrl.trim());
+        }
+        if (m.maxTokens !== undefined && Number.isFinite(m.maxTokens) && m.maxTokens > 0) {
+          await cfg.update("maxTokens", Math.floor(m.maxTokens), targets);
+          this.baseProvider.setMaxTokens(Math.floor(m.maxTokens));
+        }
+        if (m.autoApproveEdits !== undefined) await cfg.update("autoApproveEdits", m.autoApproveEdits, targets);
+        if (m.autoApproveTerminal !== undefined) await cfg.update("autoApproveTerminal", m.autoApproveTerminal, targets);
+        this.postSettings();
+        break;
+      }
+      case "setApiKey": {
+        await this.promptApiKey();
+        this.postSettings();
         break;
       }
       case "setMode": {

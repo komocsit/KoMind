@@ -12,6 +12,8 @@ function scriptedProvider(turns: { text?: string; toolUses?: { id: string; name:
     setKey() {},
     setModel() {},
     setEffort() {},
+    setBaseUrl() {},
+    setMaxTokens() {},
     async listModels() { return []; },
     async streamTurn(messages, _tools, onEvent) {
       calls.push(messages.map((m) => ({ ...m, content: [...m.content as any[]] })));
