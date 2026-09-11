@@ -53,6 +53,12 @@
           "type": "number",
           "default": 4096
         },
+        "koMind.effort": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "default": "medium",
+          "description": "Default reasoning effort sent to the API"
+        },
         "koMind.autoApproveEdits": {
           "type": "boolean",
           "default": true

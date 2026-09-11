@@ -10,6 +10,9 @@ function scriptedProvider(turns: { text?: string; toolUses?: { id: string; name:
   return {
     calls,
     setKey() {},
+    setModel() {},
+    setEffort() {},
+    async listModels() { return []; },
     async streamTurn(messages, _tools, onEvent) {
       calls.push(messages.map((m) => ({ ...m, content: [...m.content as any[]] })));
       const turn = turns.shift()!;

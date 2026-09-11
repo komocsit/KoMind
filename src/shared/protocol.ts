@@ -1,5 +1,7 @@
 export type ToolName = "read_file" | "list_dir" | "apply_edit" | "run_terminal";
 
+export type Effort = "low" | "medium" | "high";
+
 export interface ToolCallView {
   callId: string;
   tool: ToolName;
@@ -16,7 +18,8 @@ export type HostToWebviewMsg =
   | { type: "turnComplete"; sessionId: string }
   | { type: "newSession" }
   | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number }[] }
-  | { type: "loadEvents"; sessionId: string; events: SessionEvent[] };
+  | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
+  | { type: "config"; model: string; models: string[]; effort: Effort };
 
 export type WebviewToHostMsg =
   | { type: "userMessage"; sessionId: string; text: string }
@@ -24,7 +27,10 @@ export type WebviewToHostMsg =
   | { type: "newSessionRequest" }
   | { type: "retry"; sessionId: string }
   | { type: "requestSessionList" }
-  | { type: "loadSession"; sessionId: string };
+  | { type: "loadSession"; sessionId: string }
+  | { type: "requestConfig" }
+  | { type: "setModel"; model: string }
+  | { type: "setEffort"; effort: Effort };
 
 export type SessionEvent =
   | { kind: "user"; text: string; ts: number }

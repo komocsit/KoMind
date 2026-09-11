@@ -6,13 +6,15 @@ import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
-import type { HostToWebviewMsg, WebviewToHostMsg, ToolName } from "../shared/protocol";
+import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort } from "../shared/protocol";
 
 const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
 
 function toToolName(name: string): ToolName {
   return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : "read_file";
 }
+
+const EFFORTS: Effort[] = ["low", "medium", "high"];
 
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatViewProvider(context);
@@ -35,6 +37,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessions = new Map<string, AgentSession>();
   private currentSessionId?: string;
   private store!: SessionStore;
+  private baseProvider!: Provider;
+  private currentModel!: string;
+  private currentEffort: Effort = "medium";
+  private models: string[] = [];
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -49,8 +55,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage((m: WebviewToHostMsg) => void this.onMessage(m));
     this.store = new SessionStore(path.join(this.context.globalStorageUri.fsPath, "sessions"));
     this.approvals = new ApprovalManager((msg) => this.post(msg));
+
+    const cfg = vscode.workspace.getConfiguration("koMind");
+    const settingsModel = cfg.get("model", "gpt-5.6-sol");
+    this.currentModel = this.context.workspaceState.get<string>("koMind.model") ?? settingsModel;
+    const savedEffort = this.context.workspaceState.get<string>("koMind.effort");
+    const settingsEffort = cfg.get<string>("effort", "medium");
+    this.currentEffort = EFFORTS.includes(savedEffort as Effort) ? (savedEffort as Effort)
+      : EFFORTS.includes(settingsEffort as Effort) ? (settingsEffort as Effort) : "medium";
+    this.models = [this.currentModel];
+
+    // one shared base provider — model/effort changes apply to all sessions
+    this.baseProvider = createProvider({
+      baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
+      apiKey: "",
+      model: this.currentModel,
+      maxTokens: cfg.get("maxTokens", 4096),
+      effort: this.currentEffort,
+    });
+    this.baseProvider.setModel(this.currentModel);
+    this.baseProvider.setEffort(this.currentEffort);
+
     this.startSession();
     void this.sendSessionList();
+    this.postConfig();
+    // fetch the real model list from the API (falls back to current model on failure)
+    void this.baseProvider.listModels().then((models) => {
+      if (models.length > 0 && !models.includes(this.currentModel)) models.unshift(this.currentModel);
+      if (models.length > 0) { this.models = models; this.postConfig(); }
+    });
+  }
+
+  private postConfig() {
+    this.post({ type: "config", model: this.currentModel, models: this.models, effort: this.currentEffort });
   }
 
   private startSession() {
@@ -61,13 +98,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private makeSession(id: string, initialMessages?: ConstructorParameters<typeof AgentSession>[0]["initialMessages"]): AgentSession {
-    const cfg = vscode.workspace.getConfiguration("koMind");
-    const baseProvider = createProvider({
-      baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
-      apiKey: "",
-      model: cfg.get("model", "gpt-5.6-sol"),
-      maxTokens: cfg.get("maxTokens", 4096),
-    });
+    const baseProvider = this.baseProvider;
     // capture secrets before the wrapper so `this` binding cannot go wrong
     const secrets = this.context.secrets;
     let keyCached: string | null = null;
@@ -81,6 +112,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         return baseProvider.streamTurn(messages, tools, onEvent);
       },
       setKey: (k: string) => baseProvider.setKey(k),
+      setModel: (m: string) => baseProvider.setModel(m),
+      setEffort: (e: Effort) => baseProvider.setEffort(e),
+      listModels: () => baseProvider.listModels(),
     };
     const ui = {
       textDelta: (t: string) => this.post({ type: "textDelta", sessionId: id, text: t }),
@@ -156,6 +190,21 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         const events = await this.store.load(m.sessionId);
         this.post({ type: "loadEvents", sessionId: m.sessionId, events });
         this.currentSessionId = m.sessionId;
+        break;
+      }
+      case "requestConfig": this.postConfig(); break;
+      case "setModel": {
+        this.currentModel = m.model;
+        this.baseProvider.setModel(m.model);
+        void this.context.workspaceState.update("koMind.model", m.model);
+        this.postConfig();
+        break;
+      }
+      case "setEffort": {
+        this.currentEffort = m.effort;
+        this.baseProvider.setEffort(m.effort);
+        void this.context.workspaceState.update("koMind.effort", m.effort);
+        this.postConfig();
         break;
       }
     }

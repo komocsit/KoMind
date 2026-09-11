@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 interface Card {
@@ -65,14 +65,23 @@ const CSS = `
 
   /* Header */
   .header {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--vscode-panel-border);
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px 6px;
     flex: none;
   }
   .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; letter-spacing: 0.2px; }
   .brand .brand-logo { width: 22px; height: 22px; object-fit: contain; flex: none; }
-  .header select {
+  .header .spacer { flex: 1; }
+  .icon-btn { padding: 4px 7px; min-height: 28px; }
+
+  /* Controls row: model + effort */
+  .controls {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px 8px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    flex: none;
+  }
+  .controls select {
     flex: 1; min-width: 0;
     font-family: inherit; font-size: 12px;
     color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
@@ -82,6 +91,43 @@ const CSS = `
     padding: 3px 6px; min-height: 26px;
     cursor: pointer;
   }
+  .effort {
+    display: inline-flex; border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm); overflow: hidden; flex: none;
+  }
+  .effort button {
+    border: none; border-radius: 0; min-height: 24px; padding: 2px 9px;
+    font-size: 11px; font-weight: 600; background: transparent; opacity: 0.65;
+  }
+  .effort button + button { border-left: 1px solid var(--vscode-panel-border); }
+  .effort button.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    opacity: 1;
+  }
+
+  /* History panel */
+  .history-panel {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--vscode-sideBar-background);
+    z-index: 50; display: flex; flex-direction: column;
+    animation: km-slide-in 180ms ease;
+  }
+  @keyframes km-slide-in { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .history-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 10px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+    font-weight: 600; font-size: 12px;
+  }
+  .history-head button { margin-left: auto; }
+  .history-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .history-item {
+    display: block; width: 100%; text-align: left; font-weight: 400;
+    padding: 8px 10px; min-height: 34px; border: none; border-radius: var(--km-radius-sm);
+    background: transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .history-item:hover { background: var(--vscode-list-hoverBackground); }
+  .history-empty { padding: 20px 12px; text-align: center; opacity: 0.6; font-size: 12px; }
 
   /* Chat scroll area */
   .chat { flex: 1; overflow-y: auto; padding: 12px 10px; scroll-behavior: smooth; }
@@ -254,6 +300,8 @@ const CSS = `
 const iconProps = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
 
 const IconPlus = () => (<svg {...iconProps}><path d="M12 5v14M5 12h14" /></svg>);
+const IconHistory = () => (<svg {...iconProps} width={15} height={15}><path d="M3 3v6h6" /><path d="M3.5 13a9 9 0 102.6-8.4L3 7" /><path d="M12 8v4l3 2" /></svg>);
+const IconChevronLeft = () => (<svg {...iconProps} width={14} height={14}><path d="M15 18l-6-6 6-6" /></svg>);
 const IconSend = () => (<svg {...iconProps} width={15} height={15}><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>);
 const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20 6L9 17l-5-5" /></svg>);
 const IconX = () => (<svg {...iconProps} width={13} height={13}><path d="M18 6L6 18M6 6l12 12" /></svg>);
@@ -298,6 +346,10 @@ export default function App() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [sessionList, setSessionList] = useState<{ id: string; firstUserMessage: string }[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [model, setModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [effort, setEffort] = useState<Effort>("medium");
   const sessionIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -351,12 +403,18 @@ export default function App() {
           case "sessionList":
             setSessionList(m.sessions);
             return next;
+          case "config":
+            setModel(m.model);
+            setModelOptions(m.models.length > 0 ? m.models : [m.model]);
+            setEffort(m.effort);
+            return next;
           default:
             return next;
         }
       });
     });
     send({ type: "requestSessionList" });
+    send({ type: "requestConfig" });
   }, []);
 
   useEffect(() => {
@@ -392,25 +450,72 @@ export default function App() {
   ];
 
   return (
-    <div className="app">
+    <div className="app" style={{ position: "relative" }}>
       <style>{CSS}</style>
 
       <div className="header">
         <span className="brand"><img src={logoUrl} alt="" className="brand-logo" /> KoMind</span>
-        <select
-          onChange={(e) => { if (e.target.value) send({ type: "loadSession", sessionId: e.target.value }); e.target.value = ""; }}
-          value=""
-          title="Load a previous session"
-        >
-          <option value="">History…</option>
-          {sessionList.map((s) => (
-            <option key={s.id} value={s.id}>{s.firstUserMessage.slice(0, 40)}</option>
-          ))}
-        </select>
-        <button onClick={() => send({ type: "newSessionRequest" })} title="Start a new session">
-          <IconPlus /> New
+        <span className="spacer" />
+        <button className="icon-btn" onClick={() => setHistoryOpen(true)} title="Chat history">
+          <IconHistory />
+        </button>
+        <button className="icon-btn" onClick={() => { setHistoryOpen(false); send({ type: "newSessionRequest" }); }} title="New session">
+          <IconPlus />
         </button>
       </div>
+
+      <div className="controls">
+        <select
+          value={model}
+          onChange={(e) => { setModel(e.target.value); send({ type: "setModel", model: e.target.value }); }}
+          title="Model"
+          aria-label="Model"
+        >
+          {modelOptions.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <div className="effort" role="radiogroup" aria-label="Reasoning effort" title="Reasoning effort">
+          {(["low", "medium", "high"] as Effort[]).map((lv) => (
+            <button
+              key={lv}
+              className={effort === lv ? "active" : ""}
+              onClick={() => { setEffort(lv); send({ type: "setEffort", effort: lv }); }}
+              role="radio"
+              aria-checked={effort === lv}
+            >
+              {lv === "low" ? "L" : lv === "medium" ? "M" : "H"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {historyOpen && (
+        <div className="history-panel">
+          <div className="history-head">
+            <IconHistory /> Chat history
+            <button className="icon-btn" onClick={() => setHistoryOpen(false)} title="Back to chat">
+              <IconChevronLeft />
+            </button>
+          </div>
+          <div className="history-list">
+            {sessionList.length === 0 ? (
+              <div className="history-empty">No previous sessions yet.</div>
+            ) : (
+              sessionList.map((s) => (
+                <button
+                  key={s.id}
+                  className="history-item"
+                  title={s.firstUserMessage}
+                  onClick={() => { send({ type: "loadSession", sessionId: s.id }); setHistoryOpen(false); }}
+                >
+                  {s.firstUserMessage.slice(0, 60)}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="chat" ref={chatRef} onScroll={onChatScroll}>
         {cards.length === 0 && !streaming ? (

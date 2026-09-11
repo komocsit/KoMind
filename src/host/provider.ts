@@ -1,13 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ToolDef } from "./tools";
+import type { Effort } from "../shared/protocol";
 
-export interface ProviderConfig { baseUrl: string; apiKey: string; model: string; maxTokens: number; }
+export interface ProviderConfig { baseUrl: string; apiKey: string; model: string; maxTokens: number; effort?: Effort; }
 export type StreamEvent = { type: "textDelta"; text: string } | { type: "toolUse"; id: string; name: string; input: Record<string, unknown> } | { type: "endTurn" };
 export type AnthropicMessage = { role: "user" | "assistant"; content: unknown[] };
-export interface AnthropicClientLike { messages: { stream(params: unknown): AsyncIterable<unknown> }; }
+export interface AnthropicClientLike {
+  messages: { stream(params: unknown): AsyncIterable<unknown> };
+  models?: { list(params?: unknown): Promise<{ data?: { id?: string }[] } | AsyncIterable<{ id?: string }>> };
+}
 export interface Provider {
   streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void): Promise<AnthropicMessage[]>;
   setKey(key: string): void;
+  setModel(model: string): void;
+  setEffort(effort: Effort): void;
+  listModels(): Promise<string[]>;
 }
 
 export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): Provider {
@@ -21,13 +28,14 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
   }
 
   async function streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void): Promise<AnthropicMessage[]> {
-    const params = {
+    const params: Record<string, unknown> = {
       model: cfg.model,
       max_tokens: cfg.maxTokens,
       messages,
       tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema })),
       stream: true,
     };
+    if (cfg.effort) params.reasoning_effort = cfg.effort;
     let stream: AsyncIterable<unknown>;
     for (let attempt = 0; ; attempt++) {
       try { stream = client.messages.stream(params); break; }
@@ -74,5 +82,23 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     return [{ role: "assistant", content }];
   }
 
-  return { streamTurn, setKey };
+  function setModel(model: string): void { cfg = { ...cfg, model }; }
+  function setEffort(effort: Effort): void { cfg = { ...cfg, effort }; }
+
+  async function listModels(): Promise<string[]> {
+    try {
+      const res = await client.models?.list();
+      if (!res) return [];
+      const page = res as { data?: { id?: string }[] };
+      if (Array.isArray(page.data)) return page.data.map((m) => m.id).filter((id): id is string => Boolean(id));
+      // async-iterable response
+      const ids: string[] = [];
+      for await (const m of res as AsyncIterable<{ id?: string }>) { if (m.id) ids.push(m.id); }
+      return ids;
+    } catch {
+      return [];
+    }
+  }
+
+  return { streamTurn, setKey, setModel, setEffort, listModels };
 }
