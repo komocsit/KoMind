@@ -17,15 +17,15 @@ function toToolName(name: string): ToolName {
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatViewProvider(context);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("justwokerAgent.chat", provider),
-    vscode.commands.registerCommand("justwokerAgent.setApiKey", async () => {
-      const key = await vscode.window.showInputBox({ password: true, prompt: "API key for the Justwoker Agent API" });
+    vscode.window.registerWebviewViewProvider("koMind.chat", provider),
+    vscode.commands.registerCommand("koMind.setApiKey", async () => {
+      const key = await vscode.window.showInputBox({ password: true, prompt: "API key for the KoMind API (api.justwoker.icu)" });
       if (key) {
-        await context.secrets.store("justwokerAgent.apiKey", key);
-        vscode.window.showInformationMessage("API key saved.");
+        await context.secrets.store("koMind.apiKey", key);
+        vscode.window.showInformationMessage("KoMind API key saved.");
       }
     }),
-    vscode.commands.registerCommand("justwokerAgent.newSession", () => provider.newSession()),
+    vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
   );
 }
 
@@ -61,7 +61,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private makeSession(id: string, initialMessages?: ConstructorParameters<typeof AgentSession>[0]["initialMessages"]): AgentSession {
-    const cfg = vscode.workspace.getConfiguration("justwokerAgent");
+    const cfg = vscode.workspace.getConfiguration("koMind");
     const baseProvider = createProvider({
       baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
       apiKey: "",
@@ -74,8 +74,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const provider: Provider = {
       async streamTurn(messages, tools, onEvent) {
         if (!keyCached) {
-          keyCached = (await secrets.get("justwokerAgent.apiKey")) ?? null;
-          if (!keyCached) throw new Error("No API key set. Run command 'Justwoker: Set API Key'.");
+          keyCached = (await secrets.get("koMind.apiKey")) ?? null;
+          if (!keyCached) throw new Error("No API key set. Run command 'KoMind: Set API Key'.");
           baseProvider.setKey(keyCached);
         }
         return baseProvider.streamTurn(messages, tools, onEvent);
@@ -94,7 +94,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private makeToolContext(): ToolContext {
-    const cfg = vscode.workspace.getConfiguration("justwokerAgent");
+    const cfg = vscode.workspace.getConfiguration("koMind");
     const root = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     return {
       async readFile(p) { return vscode.workspace.fs.readFile(vscode.Uri.file(p)).then((b) => Buffer.from(b).toString("utf8")); },

@@ -1,6 +1,6 @@
-# Justwoker Agent — VS Code Extension
+# KoMind — VS Code Extension
 
-A VS Code extension that embeds a coding agent in the activity bar. The agent chats with a Justwoker API endpoint (default `https://api.justwoker.icu`, OpenAI-compatible streaming), and can read files, list directories, apply edits with visual diffs, and run terminal commands behind an approval gate. Sessions are persisted to global storage and can be reloaded from a dropdown.
+A VS Code extension that embeds a coding agent in the activity bar. The agent chats with an Anthropic-compatible API endpoint (default `https://api.justwoker.icu`), and can read files, list directories, apply edits with visual diffs, and run terminal commands behind an approval gate. Sessions are persisted to global storage and can be reloaded from a dropdown.
 
 ## Dev setup
 
@@ -13,17 +13,17 @@ Then open the folder in VS Code and press **F5** (Run Extension) to launch the E
 
 ## Set API key
 
-In the Extension Development Host, run the command **Justwoker: Set API Key** and paste your key. It is stored securely via VS Code SecretStorage (never written to settings or disk in plaintext).
+In the Extension Development Host, run the command **KoMind: Set API Key** and paste your key. It is stored securely via VS Code SecretStorage (never written to settings or disk in plaintext).
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `justwokerAgent.baseUrl` | `https://api.justwoker.icu` | API base URL (OpenAI-compatible) |
-| `justwokerAgent.model` | `gpt-5.6-sol` | Model name sent to the API |
-| `justwokerAgent.maxTokens` | `4096` | Max tokens per completion |
-| `justwokerAgent.autoApproveEdits` | `true` | Apply file edits automatically |
-| `justwokerAgent.autoApproveTerminal` | `false` | Require approval for terminal commands |
+| `koMind.baseUrl` | `https://api.justwoker.icu` | API base URL (Anthropic-compatible) |
+| `koMind.model` | `gpt-5.6-sol` | Model name sent to the API |
+| `koMind.maxTokens` | `4096` | Max tokens per completion |
+| `koMind.autoApproveEdits` | `true` | Apply file edits automatically |
+| `koMind.autoApproveTerminal` | `false` | Require approval for terminal commands |
 
 ## Tool permission model
 

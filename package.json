@@ -1,7 +1,7 @@
 {
-  "name": "justwoker-agent",
-  "displayName": "Justwoker Agent",
-  "publisher": "justwoker",
+  "name": "komind",
+  "displayName": "KoMind",
+  "publisher": "komind",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
@@ -12,51 +12,51 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "justwokerAgent",
-          "title": "Justwoker Agent",
+          "id": "koMind",
+          "title": "KoMind",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "justwokerAgent": [
+      "koMind": [
         {
           "type": "webview",
-          "id": "justwokerAgent.chat",
+          "id": "koMind.chat",
           "name": "Agent Chat"
         }
       ]
     },
     "commands": [
       {
-        "command": "justwokerAgent.setApiKey",
-        "title": "Justwoker: Set API Key"
+        "command": "koMind.setApiKey",
+        "title": "KoMind: Set API Key"
       },
       {
-        "command": "justwokerAgent.newSession",
-        "title": "Justwoker: New Session"
+        "command": "koMind.newSession",
+        "title": "KoMind: New Session"
       }
     ],
     "configuration": {
-      "title": "Justwoker Agent",
+      "title": "KoMind",
       "properties": {
-        "justwokerAgent.baseUrl": {
+        "koMind.baseUrl": {
           "type": "string",
           "default": "https://api.justwoker.icu"
         },
-        "justwokerAgent.model": {
+        "koMind.model": {
           "type": "string",
           "default": "gpt-5.6-sol"
         },
-        "justwokerAgent.maxTokens": {
+        "koMind.maxTokens": {
           "type": "number",
           "default": 4096
         },
-        "justwokerAgent.autoApproveEdits": {
+        "koMind.autoApproveEdits": {
           "type": "boolean",
           "default": true
         },
-        "justwokerAgent.autoApproveTerminal": {
+        "koMind.autoApproveTerminal": {
           "type": "boolean",
           "default": false
         }
