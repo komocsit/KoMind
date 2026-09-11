@@ -3,6 +3,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
 import type { HostToWebviewMsg, SessionEvent, ToolName } from "../shared/protocol";
+import logoUrl from "../../media/komind-logo.png";
 
 interface Card {
   kind: "user" | "assistant" | "tool" | "error";
@@ -70,7 +71,7 @@ const CSS = `
     flex: none;
   }
   .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; letter-spacing: 0.2px; }
-  .brand svg { color: var(--km-accent); flex: none; }
+  .brand .brand-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }
   .header select {
     flex: 1; min-width: 0;
     font-family: inherit; font-size: 12px;
@@ -91,7 +92,8 @@ const CSS = `
     align-items: center; justify-content: center; gap: 6px;
     text-align: center; padding: 24px; opacity: 0.9;
   }
-  .empty .logo { color: var(--km-accent); margin-bottom: 6px; }
+  .empty .logo-img { width: 56px; height: 56px; object-fit: contain; margin-bottom: 6px; animation: km-logo-float 3s ease-in-out infinite; }
+  @keyframes km-logo-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
   .empty h2 { margin: 0; font-size: 15px; font-weight: 600; }
   .empty p { margin: 0 0 14px; opacity: 0.7; font-size: 12px; }
   .suggestions { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 280px; }
@@ -251,12 +253,6 @@ const CSS = `
 /* ---------- Icons (inline SVG, no emoji) ---------- */
 const iconProps = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
 
-const IconSpark = (p: { size?: number }) => (
-  <svg {...iconProps} width={p.size ?? 14} height={p.size ?? 14}>
-    <path d="M12 3l1.9 5.7L19.6 10.6l-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9L12 3z" />
-    <path d="M19 15l.9 2.6L22.5 18.5l-2.6.9L19 22l-.9-2.6L15.5 18.5l2.6-.9L19 15z" />
-  </svg>
-);
 const IconPlus = () => (<svg {...iconProps}><path d="M12 5v14M5 12h14" /></svg>);
 const IconSend = () => (<svg {...iconProps} width={15} height={15}><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>);
 const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20 6L9 17l-5-5" /></svg>);
@@ -308,11 +304,15 @@ export default function App() {
   const nearBottomRef = useRef(true);
 
   useEffect(() => {
+    // remove the host-rendered loading splash once React has mounted
+    const splash = document.getElementById("splash");
+    if (splash) {
+      splash.style.opacity = "0";
+      setTimeout(() => splash.remove(), 220);
+    }
+
     onHostMessage((m: HostToWebviewMsg) => {
-      switch (m.type) {
-        case "turnComplete": setStreaming(false); break;
-        case "error": setStreaming(false); break;
-      }
+      if (m.type === "turnComplete" || m.type === "error") setStreaming(false);
       setCards((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -396,7 +396,7 @@ export default function App() {
       <style>{CSS}</style>
 
       <div className="header">
-        <span className="brand"><IconSpark size={15} /> KoMind</span>
+        <span className="brand"><img src={logoUrl} alt="" className="brand-logo" /> KoMind</span>
         <select
           onChange={(e) => { if (e.target.value) send({ type: "loadSession", sessionId: e.target.value }); e.target.value = ""; }}
           value=""
@@ -415,7 +415,7 @@ export default function App() {
       <div className="chat" ref={chatRef} onScroll={onChatScroll}>
         {cards.length === 0 && !streaming ? (
           <div className="empty">
-            <span className="logo"><IconSpark size={28} /></span>
+            <img src={logoUrl} alt="KoMind logo" className="logo-img" />
             <h2>KoMind</h2>
             <p>Your coding agent — reads files, applies edits, runs approved commands.</p>
             <div className="suggestions">

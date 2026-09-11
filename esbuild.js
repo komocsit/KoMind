@@ -10,6 +10,7 @@ const host = {
 const webview = {
   entryPoints: ["src/webview/main.tsx"], bundle: true, platform: "browser",
   format: "esm", outfile: "dist/webview/main.js", sourcemap: !prod, minify: prod,
+  loader: { ".png": "dataurl" },
 };
 const testRunner = {
   entryPoints: ["test/integration/run.ts"], bundle: true, platform: "node",

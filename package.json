@@ -7,6 +7,7 @@
     "vscode": "^1.85.0"
   },
   "main": "./dist/host/extension.js",
+  "icon": "media/komind-logo.png",
   "activationEvents": [],
   "contributes": {
     "viewsContainers": {

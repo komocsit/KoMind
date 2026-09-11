@@ -167,8 +167,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private html(webview: vscode.Webview) {
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview", "main.js"));
+    const logo = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "komind-logo.png"));
     const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:;">`;
-    return `<!DOCTYPE html><html><head>${csp}</head><body><div id="root"></div><script type="module" src="${js}"></script></body></html>`;
+    return `<!DOCTYPE html><html><head>${csp}
+<style>
+  #splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: var(--vscode-sideBar-background, #1e1e1e); z-index: 999; transition: opacity 200ms ease; }
+  #splash img { width: 72px; height: 72px; object-fit: contain; animation: km-logo-pulse 1.6s ease-in-out infinite; }
+  #splash span { font-size: 12px; opacity: 0.6; font-family: var(--vscode-font-family, sans-serif); }
+  @keyframes km-logo-pulse { 0%, 100% { opacity: 0.45; transform: scale(0.97); } 50% { opacity: 1; transform: scale(1); } }
+  @media (prefers-reduced-motion: reduce) { #splash img { animation: none; } }
+</style></head><body>
+<div id="splash" role="status" aria-label="Loading KoMind"><img src="${logo}" alt="KoMind logo" /><span>Loading KoMind…</span></div>
+<div id="root"></div>
+<script type="module" src="${js}"></script></body></html>`;
   }
 }
 
