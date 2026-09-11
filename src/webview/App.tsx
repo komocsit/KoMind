@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, FileAttachment } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 interface Card {
@@ -74,37 +74,75 @@ const CSS = `
   .header .spacer { flex: 1; }
   .icon-btn { padding: 4px 7px; min-height: 28px; }
 
-  /* Controls row: model + effort */
+  /* Controls row: model/effort menu + repo context toggle */
   .controls {
     display: flex; align-items: center; gap: 6px;
     padding: 0 10px 8px;
     border-bottom: 1px solid var(--vscode-panel-border);
-    flex: none;
+    flex: none; position: relative;
   }
-  .controls select {
-    flex: 1; min-width: 0;
-    font-family: inherit; font-size: 12px;
-    color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
-    background: var(--vscode-dropdown-background, var(--vscode-inputBackground));
+  .picker-wrap { position: relative; flex: 1; min-width: 0; }
+  .picker-btn {
+    width: 100%; justify-content: space-between; min-height: 28px;
+    font-weight: 600;
+  }
+  .picker-btn .label { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+  .picker-btn .label .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-btn .chev { transition: transform var(--km-transition); flex: none; }
+  .picker-btn .chev.open { transform: rotate(180deg); }
+  .picker-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: var(--vscode-editorWidget-background, var(--vscode-inputBackground));
     border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-    border-radius: var(--km-radius-sm);
-    padding: 3px 6px; min-height: 26px;
-    cursor: pointer;
+    border-radius: var(--km-radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    z-index: 60; padding: 4px;
+    animation: km-menu-in 130ms ease;
+    max-height: 320px; overflow-y: auto;
   }
-  .effort {
-    display: inline-flex; border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--km-radius-sm); overflow: hidden; flex: none;
+  @keyframes km-menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .menu-section {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+    opacity: 0.55; padding: 6px 8px 3px;
   }
-  .effort button {
-    border: none; border-radius: 0; min-height: 24px; padding: 2px 9px;
-    font-size: 11px; font-weight: 600; background: transparent; opacity: 0.65;
+  .menu-item {
+    display: flex; width: 100%; align-items: center; gap: 8px;
+    text-align: left; font-weight: 400; font-size: 12.5px;
+    padding: 6px 8px; min-height: 30px; border: none; border-radius: var(--km-radius-sm);
+    background: transparent; justify-content: flex-start;
   }
-  .effort button + button { border-left: 1px solid var(--vscode-panel-border); }
-  .effort button.active {
+  .menu-item:hover { background: var(--vscode-list-hoverBackground); }
+  .menu-item .check { visibility: hidden; color: var(--km-accent); flex: none; }
+  .menu-item.selected .check { visibility: visible; }
+  .menu-item .check:empty { display: none; }
+  .effort-row { display: flex; gap: 4px; padding: 2px 6px 6px; }
+  .effort-row button {
+    flex: 1; min-height: 26px; justify-content: center; font-size: 11.5px; font-weight: 600;
+  }
+  .effort-row button.active {
     background: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
-    opacity: 1;
+    border-color: transparent; opacity: 1;
   }
+  .ctx-btn { flex: none; min-height: 28px; }
+  .ctx-btn.active {
+    background: color-mix(in srgb, var(--km-accent) 18%, transparent);
+    border-color: var(--km-accent);
+    color: var(--km-accent);
+  }
+
+  /* Attachment chips */
+  .attach-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 6px; }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 2px 4px 2px 8px; min-height: 22px;
+    background: var(--vscode-inputBackground);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 10px; max-width: 100%;
+  }
+  .attach-chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-chip button { border: none; background: none; padding: 2px; min-height: 18px; min-width: 18px; border-radius: 50%; }
+  .attach-chip button:hover { background: var(--vscode-list-hoverBackground); }
 
   /* History panel */
   .history-panel {
@@ -302,6 +340,15 @@ const iconProps = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", s
 const IconPlus = () => (<svg {...iconProps}><path d="M12 5v14M5 12h14" /></svg>);
 const IconHistory = () => (<svg {...iconProps} width={15} height={15}><path d="M3 3v6h6" /><path d="M3.5 13a9 9 0 102.6-8.4L3 7" /><path d="M12 8v4l3 2" /></svg>);
 const IconChevronLeft = () => (<svg {...iconProps} width={14} height={14}><path d="M15 18l-6-6 6-6" /></svg>);
+const IconChevronDown = () => (<svg {...iconProps} width={13} height={13}><path d="M6 9l6 6 6-6" /></svg>);
+const IconPaperclip = () => (<svg {...iconProps} width={14} height={14}><path d="M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>);
+const IconBranch = () => (<svg {...iconProps} width={14} height={14}><path d="M6 3v12" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 01-9 9" /></svg>);
+const IconSparkMini = () => (
+  <svg {...iconProps} width={12} height={12} style={{ color: "var(--km-accent)", flex: "none" }}>
+    <path d="M12 3l1.9 5.7L19.6 10.6l-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9L12 3z" />
+  </svg>
+);
+const IconFileChip = () => (<svg {...iconProps} width={11} height={11}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
 const IconSend = () => (<svg {...iconProps} width={15} height={15}><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>);
 const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20 6L9 17l-5-5" /></svg>);
 const IconX = () => (<svg {...iconProps} width={13} height={13}><path d="M18 6L6 18M6 6l12 12" /></svg>);
@@ -350,6 +397,9 @@ export default function App() {
   const [model, setModel] = useState("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [effort, setEffort] = useState<Effort>("medium");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+  const [contextOn, setContextOn] = useState(false);
   const sessionIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -408,6 +458,12 @@ export default function App() {
             setModelOptions(m.models.length > 0 ? m.models : [m.model]);
             setEffort(m.effort);
             return next;
+          case "attachments":
+            setAttachments((prev) => [...prev, ...m.files]);
+            return next;
+          case "contextEnabled":
+            setContextOn(m.enabled);
+            return next;
           default:
             return next;
         }
@@ -432,9 +488,10 @@ export default function App() {
   const submit = (text?: string) => {
     const value = (text ?? input).trim();
     if (!value || !sessionIdRef.current) return;
-    send({ type: "userMessage", sessionId: sessionIdRef.current, text: value });
-    setCards((p) => [...p, { kind: "user", text: value }]);
+    send({ type: "userMessage", sessionId: sessionIdRef.current, text: value, attachments: attachments.length > 0 ? attachments : undefined });
+    setCards((p) => [...p, { kind: "user", text: attachments.length > 0 ? `${value}\n\n[${attachments.map((f) => `📎 ${f.name}`).join(" ")}]` : value }]);
     setInput("");
+    setAttachments([]);
     setStreaming(true);
     nearBottomRef.current = true;
   };
@@ -465,29 +522,63 @@ export default function App() {
       </div>
 
       <div className="controls">
-        <select
-          value={model}
-          onChange={(e) => { setModel(e.target.value); send({ type: "setModel", model: e.target.value }); }}
-          title="Model"
-          aria-label="Model"
-        >
-          {modelOptions.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-        <div className="effort" role="radiogroup" aria-label="Reasoning effort" title="Reasoning effort">
-          {(["low", "medium", "high"] as Effort[]).map((lv) => (
-            <button
-              key={lv}
-              className={effort === lv ? "active" : ""}
-              onClick={() => { setEffort(lv); send({ type: "setEffort", effort: lv }); }}
-              role="radio"
-              aria-checked={effort === lv}
-            >
-              {lv === "low" ? "L" : lv === "medium" ? "M" : "H"}
-            </button>
-          ))}
+        <div className="picker-wrap">
+          <button
+            className="picker-btn"
+            onClick={() => setMenuOpen((o) => !o)}
+            title="Model and reasoning effort"
+            aria-haspopup="listbox"
+            aria-expanded={menuOpen}
+          >
+            <span className="label">
+              <IconSparkMini />
+              <span className="name">{model || "Select model"}</span>
+            </span>
+            <span className={`chev ${menuOpen ? "open" : ""}`}><IconChevronDown /></span>
+          </button>
+          {menuOpen && (
+            <>
+              <div style={{ position: "fixed", inset: 0, zIndex: 55 }} onClick={() => setMenuOpen(false)} />
+              <div className="picker-menu" role="listbox">
+                <div className="menu-section">Model</div>
+                {modelOptions.map((mo) => (
+                  <button
+                    key={mo}
+                    role="option"
+                    aria-selected={mo === model}
+                    className={`menu-item ${mo === model ? "selected" : ""}`}
+                    onClick={() => { setModel(mo); send({ type: "setModel", model: mo }); }}
+                  >
+                    <span className="check">{mo === model ? <IconCheck /> : null}</span>
+                    {mo}
+                  </button>
+                ))}
+                <div className="menu-section">Reasoning effort</div>
+                <div className="effort-row" role="radiogroup" aria-label="Reasoning effort">
+                  {(["low", "medium", "high"] as Effort[]).map((lv) => (
+                    <button
+                      key={lv}
+                      className={effort === lv ? "active" : ""}
+                      onClick={() => { setEffort(lv); send({ type: "setEffort", effort: lv }); }}
+                      role="radio"
+                      aria-checked={effort === lv}
+                    >
+                      {lv === "low" ? "Low" : lv === "medium" ? "Med" : "High"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
+        <button
+          className={`ctx-btn ${contextOn ? "active" : ""}`}
+          onClick={() => { const next = !contextOn; setContextOn(next); send({ type: "setContextEnabled", enabled: next }); }}
+          title={contextOn ? "Repo context: ON — git status + file tree sent with the first message of each session" : "Repo context: OFF — click to attach git + file tree context"}
+          aria-pressed={contextOn}
+        >
+          <IconBranch />
+        </button>
       </div>
 
       {historyOpen && (
@@ -541,7 +632,32 @@ export default function App() {
       </div>
 
       <div className="composer">
+        {attachments.length > 0 && (
+          <div className="attach-row">
+            {attachments.map((f, i) => (
+              <span key={`${f.name}-${i}`} className="attach-chip" title={f.truncated ? `${f.name} (truncated)` : f.name}>
+                <IconFileChip />
+                <span className="n">{f.name}</span>
+                <button
+                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                  title={`Remove ${f.name}`}
+                  aria-label={`Remove attachment ${f.name}`}
+                >
+                  <IconX />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer-row">
+          <button
+            className="icon-btn"
+            onClick={() => send({ type: "attachFiles" })}
+            title="Attach files to the next message"
+            aria-label="Attach files"
+          >
+            <IconPaperclip />
+          </button>
           <textarea
             rows={2}
             value={input}
@@ -559,7 +675,7 @@ export default function App() {
             <IconSend />
           </button>
         </div>
-        <div className="hint">Enter to send · Shift+Enter for a new line</div>
+        <div className="hint">Enter to send · Shift+Enter for a new line{contextOn ? " · Repo context ON" : ""}</div>
       </div>
     </div>
   );

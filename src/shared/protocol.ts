@@ -8,6 +8,12 @@ export interface ToolCallView {
   input: Record<string, unknown>;
 }
 
+export interface FileAttachment {
+  name: string;
+  content: string;
+  truncated?: boolean;
+}
+
 export type HostToWebviewMsg =
   | { type: "textDelta"; sessionId: string; text: string }
   | { type: "toolCall"; sessionId: string; callId: string; tool: ToolName; input: Record<string, unknown> }
@@ -19,10 +25,12 @@ export type HostToWebviewMsg =
   | { type: "newSession" }
   | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number }[] }
   | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
-  | { type: "config"; model: string; models: string[]; effort: Effort };
+  | { type: "config"; model: string; models: string[]; effort: Effort }
+  | { type: "attachments"; files: FileAttachment[] }
+  | { type: "contextEnabled"; enabled: boolean };
 
 export type WebviewToHostMsg =
-  | { type: "userMessage"; sessionId: string; text: string }
+  | { type: "userMessage"; sessionId: string; text: string; attachments?: FileAttachment[] }
   | { type: "approve"; callId: string; approved: boolean }
   | { type: "newSessionRequest" }
   | { type: "retry"; sessionId: string }
@@ -30,7 +38,9 @@ export type WebviewToHostMsg =
   | { type: "loadSession"; sessionId: string }
   | { type: "requestConfig" }
   | { type: "setModel"; model: string }
-  | { type: "setEffort"; effort: Effort };
+  | { type: "setEffort"; effort: Effort }
+  | { type: "attachFiles" }
+  | { type: "setContextEnabled"; enabled: boolean };
 
 export type SessionEvent =
   | { kind: "user"; text: string; ts: number }

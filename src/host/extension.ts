@@ -6,7 +6,7 @@ import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
-import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort } from "../shared/protocol";
+import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, FileAttachment } from "../shared/protocol";
 
 const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
 
@@ -41,6 +41,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private currentModel!: string;
   private currentEffort: Effort = "medium";
   private models: string[] = [];
+  private contextEnabled = false;
+  private contextInjected = new Set<string>();
+  private repoContextCache: { at: number; text: string } | null = null;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -79,6 +82,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.startSession();
     void this.sendSessionList();
     this.postConfig();
+    this.contextEnabled = this.context.workspaceState.get<boolean>("koMind.contextEnabled") ?? false;
+    this.post({ type: "contextEnabled", enabled: this.contextEnabled });
     // fetch the real model list from the API (falls back to current model on failure)
     void this.baseProvider.listModels().then((models) => {
       if (models.length > 0 && !models.includes(this.currentModel)) models.unshift(this.currentModel);
@@ -172,7 +177,38 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async onMessage(m: WebviewToHostMsg) {
     switch (m.type) {
-      case "userMessage": this.sessions.get(m.sessionId)?.send(m.text); break;
+      case "userMessage": {
+        const session = this.sessions.get(m.sessionId);
+        if (!session) break;
+        let modelText = m.text;
+        let displayText = m.text;
+        // attachments → appended as fenced blocks for the model, chips noted in display text
+        if (m.attachments && m.attachments.length > 0) {
+          const blocks = m.attachments
+            .map((f) => `### File: ${f.name}${f.truncated ? " (truncated)" : ""}\n\`\`\`\n${f.content}\n\`\`\``)
+            .join("\n\n");
+          modelText += `\n\n[Attached files]\n\n${blocks}`;
+          displayText += `\n\n[${m.attachments.map((f) => `📎 ${f.name}`).join(" ")}]`;
+        }
+        // repo context → injected once per session when enabled
+        if (this.contextEnabled && !this.contextInjected.has(m.sessionId)) {
+          const ctxText = await this.getRepoContext();
+          if (ctxText) {
+            modelText = `${ctxText}\n\n---\n\n${modelText}`;
+            displayText = `[Repo context attached]\n\n${displayText}`;
+            this.contextInjected.add(m.sessionId);
+          }
+        }
+        session.send(modelText, displayText);
+        break;
+      }
+      case "attachFiles": await this.pickFiles(); break;
+      case "setContextEnabled": {
+        this.contextEnabled = m.enabled;
+        void this.context.workspaceState.update("koMind.contextEnabled", m.enabled);
+        this.post({ type: "contextEnabled", enabled: m.enabled });
+        break;
+      }
       case "approve": if (this.currentSessionId) this.approvals.resolve(m.callId, m.approved, this.currentSessionId); break;
       case "newSessionRequest": this.startSession(); break;
       case "retry": {
@@ -212,6 +248,86 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendSessionList() {
     this.post({ type: "sessionList", sessions: await this.store.list() });
+  }
+
+  private async pickFiles(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFolders: false,
+      title: "Attach files to the next message",
+    });
+    if (!uris || uris.length === 0) return;
+    const MAX = 100_000; // chars per file
+    const files: FileAttachment[] = [];
+    for (const uri of uris) {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        let content = Buffer.from(bytes).toString("utf8");
+        let truncated = false;
+        if (content.length > MAX) { content = content.slice(0, MAX); truncated = true; }
+        if (content.includes("\u0000")) continue; // skip binary files
+        files.push({ name: path.basename(uri.fsPath), content, truncated });
+      } catch { /* skip unreadable files */ }
+    }
+    if (files.length > 0) this.post({ type: "attachments", files });
+  }
+
+  private execGit(root: string, args: string[]): Promise<string> {
+    return new Promise((resolve) => {
+      cp.execFile("git", args, { cwd: root, timeout: 4000, windowsHide: true }, (err, stdout) => {
+        resolve(err ? "" : stdout.toString().trim());
+      });
+    });
+  }
+
+  private async getRepoContext(): Promise<string> {
+    // cache for 5 minutes — collecting on every message would be wasteful
+    if (this.repoContextCache && Date.now() - this.repoContextCache.at < 5 * 60_000) {
+      return this.repoContextCache.text;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return "";
+    const root = folder.uri.fsPath;
+
+    const SKIP = new Set(["node_modules", ".git", "dist", "out", ".vscode-test", "coverage"]);
+    const tree: string[] = [];
+    const walk = async (rel: string, depth: number): Promise<void> => {
+      if (depth > 2 || tree.length > 150) return;
+      let entries: [string, vscode.FileType][];
+      try { entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(path.join(root, rel))); }
+      catch { return; }
+      entries.sort((a, b) => (a[1] === b[1] ? a[0].localeCompare(b[0]) : a[1] === vscode.FileType.Directory ? -1 : 1));
+      for (const [name, type] of entries) {
+        if (SKIP.has(name)) continue;
+        if (tree.length > 150) { tree.push("…"); return; }
+        const relPath = rel ? `${rel}/${name}` : name;
+        tree.push(type === vscode.FileType.Directory ? `${relPath}/` : relPath);
+        if (type === vscode.FileType.Directory) await walk(relPath, depth + 1);
+      }
+    };
+    await walk("", 0);
+
+    const [branch, status, log, remote] = await Promise.all([
+      this.execGit(root, ["branch", "--show-current"]),
+      this.execGit(root, ["status", "--short"]),
+      this.execGit(root, ["log", "--oneline", "-5"]),
+      this.execGit(root, ["remote", "get-url", "origin"]),
+    ]);
+
+    if (!branch && !status && !log && tree.length === 0) return "";
+    const parts = [
+      "<repo-context>",
+      `Workspace: ${path.basename(root)}`,
+      branch ? `Git branch: ${branch}` : "Git: not a repository",
+      remote ? `Remote: ${remote}` : "",
+      log ? `Recent commits:\n${log}` : "",
+      status ? `Working tree changes:\n${status.slice(0, 2000)}` : "Working tree: clean",
+      tree.length ? `File tree (depth 2):\n${tree.join("\n")}` : "",
+      "</repo-context>",
+    ].filter(Boolean);
+    const text = parts.join("\n");
+    this.repoContextCache = { at: Date.now(), text };
+    return text;
   }
 
   private html(webview: vscode.Webview) {

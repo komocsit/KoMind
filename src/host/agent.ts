@@ -13,7 +13,7 @@ export interface AgentUi {
 
 export class AgentSession {
   private messages: AnthropicMessage[] = [];
-  private queue: string[] = [];
+  private queue: { text: string; displayText: string }[] = [];
   private running = false;
 
   constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[] }) {
@@ -26,8 +26,8 @@ export class AgentSession {
 
   get busy() { return this.running; }
 
-  send(text: string): void {
-    this.queue.push(text);
+  send(text: string, displayText?: string): void {
+    this.queue.push({ text, displayText: displayText ?? text });
     if (this.running) return;
     this.running = true;          // set synchronously so busy is observable immediately
     void this.drain();
@@ -36,15 +36,15 @@ export class AgentSession {
   private async drain(): Promise<void> {
     try {
       while (this.queue.length > 0) {
-        const text = this.queue.shift()!;
-        await this.runTurn(text);
+        const { text, displayText } = this.queue.shift()!;
+        await this.runTurn(text, displayText);
       }
     } finally { this.running = false; }
   }
 
-  private async runTurn(userText: string): Promise<void> {
+  private async runTurn(userText: string, displayText: string): Promise<void> {
     this.messages.push({ role: "user", content: [{ type: "text", text: userText }] });
-    await this.opts.store.append(this.opts.sessionId, { kind: "user", text: userText, ts: Date.now() });
+    await this.opts.store.append(this.opts.sessionId, { kind: "user", text: displayText, ts: Date.now() });
 
     try {
       for (let round = 0; round < 25; round++) {

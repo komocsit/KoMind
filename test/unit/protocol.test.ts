@@ -13,15 +13,21 @@ describe("protocol types", () => {
       { type: "turnComplete", sessionId: "s1" },
       { type: "newSession" },
       { type: "config", model: "gpt-5.6-sol", models: ["gpt-5.6-sol"], effort: "medium" },
+      { type: "attachments", files: [{ name: "a.txt", content: "x" }] },
+      { type: "attachments", files: [{ name: "b.txt", content: "y", truncated: true }] },
+      { type: "contextEnabled", enabled: true },
     ];
     const webview: WebviewToHostMsg[] = [
       { type: "userMessage", sessionId: "s1", text: "hello" },
+      { type: "userMessage", sessionId: "s1", text: "with files", attachments: [{ name: "a.txt", content: "x" }] },
       { type: "approve", callId: "c2", approved: true },
       { type: "newSessionRequest" },
       { type: "retry", sessionId: "s1" },
       { type: "requestConfig" },
       { type: "setModel", model: "gpt-5.6-sol" },
       { type: "setEffort", effort: "high" },
+      { type: "attachFiles" },
+      { type: "setContextEnabled", enabled: false },
     ];
     const events: SessionEvent[] = [
       { kind: "user", text: "hi", ts: 1 },
