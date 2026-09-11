@@ -1,8 +1,8 @@
 {
   "name": "komind",
   "displayName": "KoMind",
-  "publisher": "komind",
-  "version": "0.1.0",
+  "publisher": "komocs",
+  "version": "1.0.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -55,7 +55,9 @@
         },
         "koMind.models": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "markdownDescription": "Extra models to show in the model picker (merged with the list fetched from the API). Example: `[\"claude-sonnet-4-5\", \"gpt-5.5\"]`"
         },
@@ -65,7 +67,11 @@
         },
         "koMind.effort": {
           "type": "string",
-          "enum": ["low", "medium", "high"],
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
           "default": "medium",
           "description": "Default reasoning effort sent to the API"
         },
@@ -107,5 +113,24 @@
     "marked": "^18.0.12",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
-  }
+  },
+  "description": "An AI coding agent for VS Code with configurable Anthropic-compatible APIs, file tools, terminal approvals, and persistent sessions.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/komocsit/KoMind.git"
+  },
+  "homepage": "https://github.com/komocsit/KoMind#readme",
+  "bugs": {
+    "url": "https://github.com/komocsit/KoMind/issues"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "anthropic",
+    "assistant"
+  ]
 }
