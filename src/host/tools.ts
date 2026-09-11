@@ -6,7 +6,7 @@ export interface ToolContext {
   listDir(p: string): Promise<string[]>;
   applyEdit(p: string, oldString: string, newString: string): Promise<void>;
   runTerminal(command: string, cwd: string | undefined, onOutput: (chunk: string) => void): Promise<{ exitCode: number }>;
-  requestApproval(command: string, callId: string): Promise<boolean>;
+  requestApproval(command: string, callId: string, tool?: ToolName): Promise<boolean>;
   workspaceRoot(): string | undefined;
   autoApproveEdits: boolean;
   autoApproveTerminal: boolean;
@@ -50,7 +50,7 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
         if (!oldString) return { ok: false, output: "apply_edit error: oldString must be non-empty." };
         if (!ctx.autoApproveEdits) {
           const snippet = (s: string) => s.slice(0, 80);
-          const approved = await ctx.requestApproval(`Edit ${input.path}: replace "${snippet(oldString)}" with "${snippet(newString)}"`, callId);
+          const approved = await ctx.requestApproval(`Edit ${input.path}: replace "${snippet(oldString)}" with "${snippet(newString)}"`, callId, "apply_edit");
           if (!approved) return { ok: false, output: "User rejected this edit." };
         }
         await ctx.applyEdit(p, oldString, newString);
@@ -60,7 +60,7 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
         const command = String(input.command ?? "");
         if (!command) return { ok: false, output: "run_terminal error: command required." };
         if (!ctx.autoApproveTerminal) {
-          const approved = await ctx.requestApproval(command, callId);
+          const approved = await ctx.requestApproval(command, callId, "run_terminal");
           if (!approved) return { ok: false, output: "User rejected this command." };
         }
         const cwd = input.cwd ? resolvePath(ctx.workspaceRoot(), String(input.cwd)) : undefined;

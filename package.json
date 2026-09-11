@@ -36,6 +36,10 @@
       {
         "command": "koMind.newSession",
         "title": "KoMind: New Session"
+      },
+      {
+        "command": "koMind.resetPermissions",
+        "title": "KoMind: Reset Always-Allow Permissions"
       }
     ],
     "configuration": {

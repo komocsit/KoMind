@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, FileAttachment } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 interface Card {
@@ -280,6 +280,21 @@ const CSS = `
   }
   .approval-row { display: flex; gap: 8px; margin-top: 8px; }
   .approval-row button { flex: 1; justify-content: center; font-weight: 600; }
+  .kbd {
+    font-size: 9.5px; font-weight: 700; opacity: 0.7;
+    border: 1px solid currentColor; border-radius: 3px;
+    padding: 0 3px; margin-left: 2px; line-height: 14px;
+  }
+
+  /* Plan/Build mode toggle */
+  .mode-toggle { display: inline-flex; border: 1px solid var(--vscode-panel-border); border-radius: var(--km-radius-sm); overflow: hidden; flex: none; }
+  .mode-toggle button {
+    border: none; border-radius: 0; min-height: 26px; padding: 2px 10px;
+    font-size: 11px; font-weight: 600; background: transparent; opacity: 0.65;
+  }
+  .mode-toggle button + button { border-left: 1px solid var(--vscode-panel-border); }
+  .mode-toggle button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); opacity: 1; }
+  .mode-toggle button.active.plan { background: var(--km-warn); color: var(--vscode-sideBar-background, #1e1e1e); }
   .tool-output {
     margin: 6px 0 0;
     font-family: var(--vscode-editor-font-family, monospace);
@@ -400,6 +415,8 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [contextOn, setContextOn] = useState(false);
+  const [mode, setMode] = useState<Mode>("build");
+  const [alwaysAllow, setAlwaysAllow] = useState({ terminal: false, edits: false });
   const sessionIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -457,6 +474,8 @@ export default function App() {
             setModel(m.model);
             setModelOptions(m.models.length > 0 ? m.models : [m.model]);
             setEffort(m.effort);
+            setMode(m.mode);
+            setAlwaysAllow(m.alwaysAllow);
             return next;
           case "attachments":
             setAttachments((prev) => [...prev, ...m.files]);
@@ -478,6 +497,27 @@ export default function App() {
       bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }, [cards, streaming]);
+
+  // keyboard shortcuts for the pending approval: A approve · Shift+A always allow · R reject
+  const pendingApprovalCard = cards.find((c) => c.kind === "tool" && c.pendingApproval);
+  useEffect(() => {
+    if (!pendingApprovalCard) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT")) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "a" && pendingApprovalCard.callId) {
+        e.preventDefault();
+        send({ type: "approve", callId: pendingApprovalCard.callId, approved: true, always: e.shiftKey });
+      } else if (key === "r" && pendingApprovalCard.callId) {
+        e.preventDefault();
+        send({ type: "approve", callId: pendingApprovalCard.callId, approved: false });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingApprovalCard]);
 
   const onChatScroll = () => {
     const el = chatRef.current;
@@ -579,6 +619,24 @@ export default function App() {
         >
           <IconBranch />
         </button>
+        <div className="mode-toggle" role="radiogroup" aria-label="Agent mode" title="Plan mode: read-only, no edits or commands. Build mode: full tool access.">
+          <button
+            className={mode === "plan" ? "active plan" : ""}
+            onClick={() => { setMode("plan"); send({ type: "setMode", mode: "plan" }); }}
+            role="radio"
+            aria-checked={mode === "plan"}
+          >
+            Plan
+          </button>
+          <button
+            className={mode === "build" ? "active" : ""}
+            onClick={() => { setMode("build"); send({ type: "setMode", mode: "build" }); }}
+            role="radio"
+            aria-checked={mode === "build"}
+          >
+            Build
+          </button>
+        </div>
       </div>
 
       {historyOpen && (
@@ -675,7 +733,12 @@ export default function App() {
             <IconSend />
           </button>
         </div>
-        <div className="hint">Enter to send · Shift+Enter for a new line{contextOn ? " · Repo context ON" : ""}</div>
+        <div className="hint">
+          Enter to send · Shift+Enter for a new line
+          {mode === "plan" ? " · 🧭 Plan mode (read-only)" : ""}
+          {contextOn ? " · Repo context ON" : ""}
+          {alwaysAllow.terminal ? " · Terminal auto-approved" : ""}
+        </div>
       </div>
     </div>
   );
@@ -743,11 +806,14 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
         <div className="tool-body">
           <div className="cmd-block">{card.pendingApproval}</div>
           <div className="approval-row">
-            <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true })}>
-              <IconCheck /> Approve
+            <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true })} title="Approve (A)">
+              <IconCheck /> Approve <span className="kbd">A</span>
             </button>
-            <button className="reject" onClick={() => send({ type: "approve", callId: card.callId!, approved: false })}>
-              <IconX /> Reject
+            <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true, always: true })} title="Always allow this tool — no more approval prompts (Shift+A)">
+              <IconCheck /> Always allow <span className="kbd">⇧A</span>
+            </button>
+            <button className="reject" onClick={() => send({ type: "approve", callId: card.callId!, approved: false })} title="Reject (R)">
+              <IconX /> Reject <span className="kbd">R</span>
             </button>
           </div>
         </div>

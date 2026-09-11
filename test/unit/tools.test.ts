@@ -77,7 +77,7 @@ describe("executeTool", () => {
   it("run_terminal calls requestApproval and runs when approved", async () => {
     const ctx = mockCtx();
     const r = await executeTool("run_terminal", { command: "npm test" }, "c1", ctx);
-    expect(ctx.requestApproval).toHaveBeenCalledWith("npm test", "c1");
+    expect(ctx.requestApproval).toHaveBeenCalledWith("npm test", "c1", "run_terminal");
     expect(ctx.runTerminal).toHaveBeenCalled();
     expect(r.ok).toBe(true);
   });

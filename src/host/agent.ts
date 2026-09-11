@@ -1,7 +1,7 @@
 import type { Provider, AnthropicMessage } from "./provider";
-import { executeTool, TOOL_DEFS, type ToolContext } from "./tools";
+import { executeTool, TOOL_DEFS, type ToolContext, type ToolDef } from "./tools";
 import type { SessionStore } from "./store";
-import type { SessionEvent } from "../shared/protocol";
+import type { SessionEvent, ToolName } from "../shared/protocol";
 
 export interface AgentUi {
   textDelta(t: string): void;
@@ -15,9 +15,15 @@ export class AgentSession {
   private messages: AnthropicMessage[] = [];
   private queue: { text: string; displayText: string }[] = [];
   private running = false;
+  /** Tool names the agent may use; null = all tools (build mode). */
+  allowedTools: ToolName[] | null = null;
 
   constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[] }) {
     if (opts.initialMessages) this.messages.push(...opts.initialMessages);
+  }
+
+  private get tools(): ToolDef[] {
+    return this.allowedTools === null ? TOOL_DEFS : TOOL_DEFS.filter((t) => this.allowedTools!.includes(t.name));
   }
 
   seedFromEvents(events: SessionEvent[]): void {
@@ -48,7 +54,7 @@ export class AgentSession {
 
     try {
       for (let round = 0; round < 25; round++) {
-        const assistantMsgs = await this.opts.provider.streamTurn(this.messages, TOOL_DEFS, (e) => {
+        const assistantMsgs = await this.opts.provider.streamTurn(this.messages, this.tools, (e) => {
           if (e.type === "textDelta") this.opts.ui.textDelta(e.text);
           else if (e.type === "toolUse") this.opts.ui.toolCall(e.id, e.name, e.input);
         });

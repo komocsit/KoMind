@@ -6,7 +6,7 @@ import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
-import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, FileAttachment } from "../shared/protocol";
+import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment } from "../shared/protocol";
 
 const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
 
@@ -28,6 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
+    vscode.commands.registerCommand("koMind.resetPermissions", () => provider.resetPermissions()),
   );
 }
 
@@ -44,12 +45,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private contextEnabled = false;
   private contextInjected = new Set<string>();
   private repoContextCache: { at: number; text: string } | null = null;
+  private mode: Mode = "build";
+  private alwaysAllow = { terminal: false, edits: false };
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   post(msg: HostToWebviewMsg) { void this.view?.webview.postMessage(msg); }
 
   newSession() { this.startSession(); }
+
+  resetPermissions() {
+    this.alwaysAllow = { terminal: false, edits: false };
+    void this.context.workspaceState.update("koMind.alwaysAllow.terminal", false);
+    void this.context.workspaceState.update("koMind.alwaysAllow.edits", false);
+    this.postConfig();
+    vscode.window.showInformationMessage("KoMind: always-allow permissions reset.");
+  }
 
   resolveWebviewView(view: vscode.WebviewView) {
     this.view = view;
@@ -81,9 +92,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.startSession();
     void this.sendSessionList();
-    this.postConfig();
     this.contextEnabled = this.context.workspaceState.get<boolean>("koMind.contextEnabled") ?? false;
     this.post({ type: "contextEnabled", enabled: this.contextEnabled });
+    this.mode = this.context.workspaceState.get<Mode>("koMind.mode") ?? "build";
+    this.alwaysAllow = {
+      terminal: this.context.workspaceState.get<boolean>("koMind.alwaysAllow.terminal") ?? false,
+      edits: this.context.workspaceState.get<boolean>("koMind.alwaysAllow.edits") ?? false,
+    };
+    this.applyMode();
+    this.postConfig();
     // fetch the real model list from the API (falls back to current model on failure)
     void this.baseProvider.listModels().then((models) => {
       if (models.length > 0 && !models.includes(this.currentModel)) models.unshift(this.currentModel);
@@ -92,7 +109,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private postConfig() {
-    this.post({ type: "config", model: this.currentModel, models: this.models, effort: this.currentEffort });
+    this.post({ type: "config", model: this.currentModel, models: this.models, effort: this.currentEffort, mode: this.mode, alwaysAllow: this.alwaysAllow });
+  }
+
+  /** plan mode: sessions may only use read-only tools; build mode: all tools. */
+  private applyMode() {
+    const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir"] : null;
+    for (const session of this.sessions.values()) session.allowedTools = allowed;
   }
 
   private startSession() {
@@ -168,7 +191,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           proc.stderr?.on("data", (d) => onOutput(d.toString()));
         });
       },
-      requestApproval: (command, callId) => this.approvals.request(this.currentSessionId ?? "", callId, command),
+      requestApproval: (command, callId, tool) => {
+        // persistent "always allow" grants bypass the approval card
+        if (tool === "run_terminal" && this.alwaysAllow.terminal) return Promise.resolve(true);
+        if (tool === "apply_edit" && this.alwaysAllow.edits) return Promise.resolve(true);
+        return this.approvals.request(this.currentSessionId ?? "", callId, command, tool ?? "run_terminal");
+      },
       workspaceRoot: root,
       autoApproveEdits: cfg.get("autoApproveEdits", true),
       autoApproveTerminal: cfg.get("autoApproveTerminal", false),
@@ -209,7 +237,23 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: "contextEnabled", enabled: m.enabled });
         break;
       }
-      case "approve": if (this.currentSessionId) this.approvals.resolve(m.callId, m.approved, this.currentSessionId); break;
+      case "approve": {
+        if (!this.currentSessionId) break;
+        // "always allow": persist a per-tool grant so future approvals are skipped
+        if (m.always && m.approved) {
+          const tool = this.approvals.toolOf(m.callId);
+          if (tool === "run_terminal") {
+            this.alwaysAllow.terminal = true;
+            void this.context.workspaceState.update("koMind.alwaysAllow.terminal", true);
+          } else if (tool === "apply_edit") {
+            this.alwaysAllow.edits = true;
+            void this.context.workspaceState.update("koMind.alwaysAllow.edits", true);
+          }
+          this.postConfig();
+        }
+        this.approvals.resolve(m.callId, m.approved, this.currentSessionId);
+        break;
+      }
       case "newSessionRequest": this.startSession(); break;
       case "retry": {
         const s = this.sessions.get(m.sessionId);
@@ -240,6 +284,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         this.currentEffort = m.effort;
         this.baseProvider.setEffort(m.effort);
         void this.context.workspaceState.update("koMind.effort", m.effort);
+        this.postConfig();
+        break;
+      }
+      case "setMode": {
+        this.mode = m.mode;
+        void this.context.workspaceState.update("koMind.mode", m.mode);
+        this.applyMode();
+        this.postConfig();
+        break;
+      }
+      case "resetPermissions": {
+        this.alwaysAllow = { terminal: false, edits: false };
+        void this.context.workspaceState.update("koMind.alwaysAllow.terminal", false);
+        void this.context.workspaceState.update("koMind.alwaysAllow.edits", false);
         this.postConfig();
         break;
       }
