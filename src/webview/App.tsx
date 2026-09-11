@@ -71,7 +71,7 @@ const CSS = `
     flex: none;
   }
   .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; letter-spacing: 0.2px; }
-  .brand .brand-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }
+  .brand .brand-logo { width: 22px; height: 22px; object-fit: contain; flex: none; }
   .header select {
     flex: 1; min-width: 0;
     font-family: inherit; font-size: 12px;
@@ -92,7 +92,7 @@ const CSS = `
     align-items: center; justify-content: center; gap: 6px;
     text-align: center; padding: 24px; opacity: 0.9;
   }
-  .empty .logo-img { width: 56px; height: 56px; object-fit: contain; margin-bottom: 6px; animation: km-logo-float 3s ease-in-out infinite; }
+  .empty .logo-img { width: 84px; height: 84px; object-fit: contain; margin-bottom: 10px; animation: km-logo-float 3s ease-in-out infinite; }
   @keyframes km-logo-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
   .empty h2 { margin: 0; font-size: 15px; font-weight: 600; }
   .empty p { margin: 0 0 14px; opacity: 0.7; font-size: 12px; }

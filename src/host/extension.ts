@@ -173,7 +173,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 <style>
   #splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
     background: var(--vscode-sideBar-background, #1e1e1e); z-index: 999; transition: opacity 200ms ease; }
-  #splash img { width: 72px; height: 72px; object-fit: contain; animation: km-logo-pulse 1.6s ease-in-out infinite; }
+  #splash img { width: 96px; height: 96px; object-fit: contain; animation: km-logo-pulse 1.6s ease-in-out infinite; }
   #splash span { font-size: 12px; opacity: 0.6; font-family: var(--vscode-font-family, sans-serif); }
   @keyframes km-logo-pulse { 0%, 100% { opacity: 0.45; transform: scale(0.97); } 50% { opacity: 1; transform: scale(1); } }
   @media (prefers-reduced-motion: reduce) { #splash img { animation: none; } }
