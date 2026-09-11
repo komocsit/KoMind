@@ -1,0 +1,2 @@
+﻿deHello from the smoke test file.
+This is line two.

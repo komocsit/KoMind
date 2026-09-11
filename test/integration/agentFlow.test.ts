@@ -14,7 +14,7 @@ suite("KoMind extension", () => {
 
   test("commands are registered", async () => {
     const cmds = await vscode.commands.getCommands(true);
-    assert.ok(cmds.includes("koMind.setApiKey"));
-    assert.ok(cmds.includes("koMind.newSession"));
+    assert.ok(cmds.includes("koMind.newSession"), "newSession command missing");
+    assert.ok(cmds.includes("koMind.resetPermissions"), "resetPermissions command missing");
   });
 });
