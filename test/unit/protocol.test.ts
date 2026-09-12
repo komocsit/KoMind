@@ -21,6 +21,7 @@ describe("protocol types", () => {
     const webview: WebviewToHostMsg[] = [
       { type: "userMessage", sessionId: "s1", text: "hello" },
       { type: "userMessage", sessionId: "s1", text: "with files", attachments: [{ name: "a.txt", content: "x" }] },
+      { type: "userMessage", sessionId: "s1", text: "what is this?", images: [{ name: "paste.png", mediaType: "image/png", data: "aW1hZ2U=" }] },
       { type: "approve", callId: "c2", approved: true },
       { type: "approve", callId: "c3", approved: true, always: true },
       { type: "newSessionRequest" },

@@ -64,27 +64,6 @@ describe("AgentSession", () => {
     expect(ui.textDelta).toHaveBeenCalledWith("The".slice(0, 3));
   });
 
-  it("sends pasted images as Anthropic base64 image blocks and persists them", async () => {
-    const provider = scriptedProvider([{ text: "a diagram" }]);
-    const ui = { textDelta: vi.fn(), toolCall: vi.fn(), toolResult: vi.fn(), error: vi.fn(), turnComplete: vi.fn() };
-    const store = new SessionStore(dir);
-    const { id } = store.createSession();
-    const session = new AgentSession({ sessionId: id, provider, ctx: ctx(), store, ui });
-    const image = { name: "pasted-image.png", mediaType: "image/png" as const, data: "aW1hZ2U=" };
-    session.send("describe this", undefined, [image]);
-    await vi.waitFor(() => expect(ui.turnComplete).toHaveBeenCalled());
-
-    expect(provider.calls[0][0]).toEqual({
-      role: "user",
-      content: [
-        { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
-        { type: "text", text: "describe this" },
-      ],
-    });
-    const events = await store.load(id);
-    expect(events[0]).toMatchObject({ kind: "user", text: "describe this", images: [image] });
-  });
-
   it("persists events to the session JSONL", async () => {
     const provider = scriptedProvider([{ text: "ok" }]);
     const ui = { textDelta: vi.fn(), toolCall: vi.fn(), toolResult: vi.fn(), error: vi.fn(), turnComplete: vi.fn() };
@@ -156,22 +135,6 @@ describe("AgentSession", () => {
     // the last seeded message before "continue" must be the assistant text
     const beforeNew = firstCall.slice(0, -1);
     expect(beforeNew[beforeNew.length - 1].role).toBe("assistant");
-  });
-
-  it("messagesFromEvents restores persisted image blocks", () => {
-    const msgs = messagesFromEvents([{
-      kind: "user",
-      text: "describe this",
-      ts: 1,
-      images: [{ name: "diagram.png", mediaType: "image/png", data: "aW1hZ2U=" }],
-    }]);
-    expect(msgs).toEqual([{
-      role: "user",
-      content: [
-        { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
-        { type: "text", text: "describe this" },
-      ],
-    }]);
   });
 
   it("messagesFromEvents reconstructs user/assistant/tool blocks in order", () => {

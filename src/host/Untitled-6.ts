@@ -6,7 +6,7 @@ import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
-import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment } from "../shared/protocol";
+import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment } from "../shared/protocol";
 
 const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
 
@@ -20,7 +20,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGES = 5;
 
-function validImages(images: ImageAttachment[]): ImageAttachment[] {
+function validImages(images: import("../shared/protocol").ImageAttachment[]) {
   let total = 0;
   return images.slice(0, MAX_IMAGES).filter((image) => {
     if (!IMAGE_TYPES.has(image.mediaType) || image.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) return false;
@@ -222,19 +222,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       async applyEdit(p, oldString, newString) {
         const uri = vscode.Uri.file(p);
         const doc = await vscode.workspace.openTextDocument(uri);
-        // Save any existing in-editor changes first, then save the accepted agent edit.
-        // This is explicit and does not depend on the user's files.autoSave setting.
-        if (doc.isDirty && !await doc.save()) throw new Error("Existing file changes could not be saved.");
         const text = doc.getText();
         const count = text.split(oldString).length - 1;
         if (count === 0) throw new Error("oldString not found in file.");
         if (count > 1) throw new Error(`oldString found ${count} times; must be unique.`);
-        const start = text.indexOf(oldString);
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(uri, new vscode.Range(doc.positionAt(start), doc.positionAt(start + oldString.length)), newString);
+        const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
+        edit.replace(uri, fullRange, text.replace(oldString, newString));
         const ok = await vscode.workspace.applyEdit(edit);
         if (!ok) throw new Error("Edit rejected by editor.");
-        if (!await doc.save()) throw new Error("Edited file could not be saved.");
+        // Persist agent edits immediately. Git/Source Control remains the source of truth
+        // for reviewing the diff, and no untitled preview document can trigger a save prompt.
+        const saved = await doc.save();
+        if (!saved) throw new Error("Edited file could not be saved.");
       },
       async runTerminal(command, cwd, onOutput) {
         return new Promise((resolve) => {

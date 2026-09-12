@@ -29,10 +29,7 @@ export class SessionStore {
       const id = f.replace(/\.jsonl$/, "");
       const events = await this.load(id);
       const first = events.find((e) => e.kind === "user");
-      if (first && first.kind === "user") {
-        const imageLabel = first.images?.length ? `[Image: ${first.images.map((image) => image.name).join(", ")}]` : "";
-        out.push({ id, firstUserMessage: first.text || imageLabel, ts: first.ts });
-      }
+      if (first && first.kind === "user") out.push({ id, firstUserMessage: first.text, ts: first.ts });
     }
     return out.sort((a, b) => b.ts - a.ts);
   }

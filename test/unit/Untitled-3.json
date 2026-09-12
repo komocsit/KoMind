@@ -77,8 +77,7 @@
         },
         "koMind.autoApproveEdits": {
           "type": "boolean",
-          "default": true,
-          "description": "Apply edits without approval. Every accepted edit is always saved immediately."
+          "default": true
         },
         "koMind.autoApproveTerminal": {
           "type": "boolean",

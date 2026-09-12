@@ -59,7 +59,7 @@ export type WebviewToHostMsg =
   | { type: "setContextEnabled"; enabled: boolean };
 
 export type SessionEvent =
-  | { kind: "user"; text: string; ts: number; images?: ImageAttachment[] }
+  | { kind: "user"; text: string; ts: number }
   | { kind: "assistantText"; text: string; ts: number }
   | { kind: "toolCall"; callId: string; tool: ToolName; input: Record<string, unknown>; ts: number }
   | { kind: "toolResult"; callId: string; ok: boolean; output: string; ts: number }

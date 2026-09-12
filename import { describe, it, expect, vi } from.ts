@@ -45,12 +45,12 @@ describe("executeTool", () => {
     const r = await executeTool("apply_edit", { path: "a.txt", oldString: "", newString: "x" }, "c1", mockCtx());
     expect(r.ok).toBe(false);
   });
-  it("apply_edit auto-applies and reports that the file was saved when autoApproveEdits is true", async () => {
+  it("apply_edit auto-applies when autoApproveEdits is true", async () => {
     const ctx = mockCtx();
     const r = await executeTool("apply_edit", { path: "a.txt", oldString: "old", newString: "new" }, "c1", ctx);
     expect(ctx.requestApproval).not.toHaveBeenCalled();
     expect(ctx.applyEdit).toHaveBeenCalled();
-    expect(r).toEqual({ ok: true, output: "Edited and saved a.txt" });
+    expect(r.ok).toBe(true);
   });
   it("apply_edit routes through approval when autoApproveEdits is false", async () => {
     const ctx = mockCtx({ autoApproveEdits: false });

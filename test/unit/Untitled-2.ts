@@ -54,7 +54,7 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
           if (!approved) return { ok: false, output: "User rejected this edit." };
         }
         await ctx.applyEdit(p, oldString, newString);
-        return { ok: true, output: `Edited and saved ${input.path}` };
+        return { ok: true, output: `Edited ${input.path}` };
       }
       case "run_terminal": {
         const command = String(input.command ?? "");

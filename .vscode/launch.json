@@ -1,11 +1,17 @@
 {
   "version": "0.2.0",
-  "configurations": [{
-    "name": "Run Extension",
-    "type": "extensionHost",
-    "request": "launch",
-    "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-    "preLaunchTask": "npm: watch",
-    "outFiles": ["${workspaceFolder}/dist/**/*.js"]
-  }]
+  "configurations": [
+    {
+      "name": "Run KoMind - Dev",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/.dev-extension"
+      ],
+      "preLaunchTask": "npm: watch:dev",
+      "outFiles": [
+        "${workspaceFolder}/.dev-extension/dist/**/*.js"
+      ]
+    }
+  ]
 }

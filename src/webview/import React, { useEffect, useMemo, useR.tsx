@@ -411,7 +411,6 @@ const CSS = `
   }
   .composer .send-btn:hover { background: var(--vscode-button-hoverBackground); }
   .composer .hint { margin-top: 5px; font-size: 10.5px; opacity: 0.55; text-align: center; }
-  .paste-error { margin: 0 0 6px; color: var(--vscode-errorForeground); font-size: 11px; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
@@ -521,7 +520,6 @@ export default function App() {
   const [newModel, setNewModel] = useState("");
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [images, setImages] = useState<ImageAttachment[]>([]);
-  const [pasteError, setPasteError] = useState("");
   const [contextOn, setContextOn] = useState(false);
   const [mode, setMode] = useState<Mode>("build");
   const [alwaysAllow, setAlwaysAllow] = useState({ terminal: false, edits: false });
@@ -658,7 +656,6 @@ export default function App() {
     setInput("");
     setAttachments([]);
     setImages([]);
-    setPasteError("");
     setStreaming(true);
     nearBottomRef.current = true;
   };
@@ -670,7 +667,6 @@ export default function App() {
       .filter((file): file is File => Boolean(file));
     if (files.length === 0) return;
     e.preventDefault();
-    setPasteError("");
 
     const available = MAX_IMAGES_PER_MESSAGE - images.length;
     let availableBytes = MAX_TOTAL_IMAGE_BYTES - images.reduce((sum, image) => sum + base64Bytes(image.data), 0);
@@ -680,25 +676,14 @@ export default function App() {
       if (accepted) availableBytes -= file.size;
       return accepted;
     });
-    if (valid.length === 0) {
-      setPasteError(available <= 0
-        ? `You can attach up to ${MAX_IMAGES_PER_MESSAGE} images.`
-        : "Image not added. Use PNG, JPEG, GIF, or WebP and keep each image under 5 MB (8 MB total)."
-      );
-      return;
-    }
+    if (valid.length === 0) return;
 
-    try {
-      const next = await Promise.all(valid.map((file) => {
-        const ext = file.type === "image/jpeg" ? "jpg" : file.type.split("/")[1];
-        const name = file.name && file.name !== "image.png" ? file.name : `pasted-image-${++imageSequenceRef.current}.${ext}`;
-        return readImage(file, name);
-      }));
-      setImages((prev) => [...prev, ...next].slice(0, MAX_IMAGES_PER_MESSAGE));
-      if (valid.length < files.length) setPasteError("Some images were skipped because of type, size, or count limits.");
-    } catch (error) {
-      setPasteError(error instanceof Error ? error.message : "Could not read the pasted image.");
-    }
+    const next = await Promise.all(valid.map((file) => {
+      const ext = file.type === "image/jpeg" ? "jpg" : file.type.split("/")[1];
+      const name = file.name && file.name !== "image.png" ? file.name : `pasted-image-${++imageSequenceRef.current}.${ext}`;
+      return readImage(file, name);
+    }));
+    setImages((prev) => [...prev, ...next].slice(0, MAX_IMAGES_PER_MESSAGE));
   };
 
   const onRetry = () => {
@@ -902,7 +887,6 @@ export default function App() {
       </div>
 
       <div className="composer">
-        {pasteError && <div className="paste-error" role="alert">{pasteError}</div>}
         {(attachments.length > 0 || images.length > 0) && (
           <div className="attach-row">
             {images.map((image, i) => (
@@ -1034,8 +1018,8 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
             <label className="check-row" htmlFor="km-edits">
               <input id="km-edits" type="checkbox" checked={autoApproveEdits} onChange={(e) => setAutoApproveEdits(e.target.checked)} />
               <span>
-                <b>Apply edits without approval</b>
-                <small>Every accepted edit is saved immediately</small>
+                <b>Apply file edits automatically</b>
+                <small>When off, every edit needs approval</small>
               </span>
             </label>
           </div>

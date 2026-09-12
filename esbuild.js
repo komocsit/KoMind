@@ -1,15 +1,37 @@
 const esbuild = require("esbuild");
+const fs = require("fs");
+const path = require("path");
 const prod = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
+const devExtension = process.argv.includes("--dev-extension");
+const outputRoot = devExtension ? ".dev-extension" : ".";
+
+if (devExtension) {
+  const manifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  manifest.name = "komind-dev";
+  manifest.displayName = "KoMind - Dev";
+  manifest.contributes.viewsContainers.activitybar.forEach((container) => {
+    container.title = "KoMind - Dev";
+  });
+  manifest.contributes.configuration.title = "KoMind - Dev";
+  manifest.contributes.commands.forEach((command) => {
+    command.title = command.title.replace(/^KoMind:/, "KoMind - Dev:");
+  });
+
+  fs.mkdirSync(outputRoot, { recursive: true });
+  fs.writeFileSync(path.join(outputRoot, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.cpSync("media", path.join(outputRoot, "media"), { recursive: true });
+}
 
 const host = {
   entryPoints: ["src/host/extension.ts"], bundle: true, platform: "node",
-  format: "cjs", outfile: "dist/host/extension.js", external: ["vscode"],
+  format: "cjs", outfile: path.join(outputRoot, "dist/host/extension.js"), external: ["vscode"],
   sourcemap: !prod, minify: prod,
 };
 const webview = {
   entryPoints: ["src/webview/main.tsx"], bundle: true, platform: "browser",
-  format: "esm", outfile: "dist/webview/main.js", sourcemap: !prod, minify: prod,
+  format: "esm", outfile: path.join(outputRoot, "dist/webview/main.js"), sourcemap: !prod, minify: prod,
+  define: { __KOMIND_DISPLAY_NAME__: JSON.stringify(devExtension ? "KoMind - Dev" : "KoMind") },
   loader: { ".png": "dataurl" },
 };
 const testRunner = {

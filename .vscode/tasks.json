@@ -3,11 +3,22 @@
   "tasks": [
     {
       "type": "npm",
-      "script": "watch",
+      "script": "watch:dev",
       "problemMatcher": "$esbuild-watch",
-      "label": "npm: watch",
+      "label": "npm: watch:dev",
       "isBackground": true,
-      "group": { "kind": "build", "isDefault": true }
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "npm",
+      "script": "compile",
+      "group": "build",
+      "problemMatcher": [],
+      "label": "npm: compile",
+      "detail": "node esbuild.js --production"
     }
   ]
 }

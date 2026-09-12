@@ -27,7 +27,7 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 
 ## Tool permission model
 
-- **Edits** (`apply_edit`): accepted edits are always saved immediately, independent of VS Code's `files.autoSave` setting, so no Save/Don't Save prompt is needed. `autoApproveEdits` only controls whether approval is required before applying an edit and defaults to `true`. Review changes with Git/Source Control. Non-unique or missing `oldString` matches are rejected with an error.
+- **Edits** (`apply_edit`): auto-applied and saved immediately by default (`autoApproveEdits`), so no save prompt is shown. Review changes with Git/Source Control. Non-unique or missing `oldString` matches are rejected with an error.
 - **Terminal** (`run_terminal`): requires explicit user approval in the chat card (Approve/Reject buttons). Unanswered requests auto-reject after 60 seconds.
 
 ## Architecture

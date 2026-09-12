@@ -26,17 +26,6 @@ describe("SessionStore", () => {
     const list = await s.list();
     expect(list).toEqual([{ id, firstUserMessage: "fix the bug", ts: 42 }]);
   });
-  it("uses an image label for an image-only session", async () => {
-    const s = new SessionStore(dir);
-    const { id } = s.createSession();
-    await s.append(id, {
-      kind: "user",
-      text: "",
-      ts: 42,
-      images: [{ name: "diagram.png", mediaType: "image/png", data: "aW1hZ2U=" }],
-    });
-    expect(await s.list()).toEqual([{ id, firstUserMessage: "[Image: diagram.png]", ts: 42 }]);
-  });
   it("delete removes the file", async () => {
     const s = new SessionStore(dir);
     const { id } = s.createSession();

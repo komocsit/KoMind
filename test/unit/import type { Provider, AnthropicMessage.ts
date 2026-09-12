@@ -1,7 +1,7 @@
 import type { Provider, AnthropicMessage } from "./provider";
 import { executeTool, TOOL_DEFS, type ToolContext, type ToolDef } from "./tools";
 import type { SessionStore } from "./store";
-import type { SessionEvent, ToolName, ImageAttachment } from "../shared/protocol";
+import type { SessionEvent, ToolName } from "../shared/protocol";
 
 export interface AgentUi {
   textDelta(t: string): void;
@@ -13,7 +13,7 @@ export interface AgentUi {
 
 export class AgentSession {
   private messages: AnthropicMessage[] = [];
-  private queue: { text: string; displayText: string; images: ImageAttachment[] }[] = [];
+  private queue: { text: string; displayText: string }[] = [];
   private running = false;
   /** Tool names the agent may use; null = all tools (build mode). */
   allowedTools: ToolName[] | null = null;
@@ -32,8 +32,8 @@ export class AgentSession {
 
   get busy() { return this.running; }
 
-  send(text: string, displayText?: string, images: ImageAttachment[] = []): void {
-    this.queue.push({ text, displayText: displayText ?? text, images });
+  send(text: string, displayText?: string): void {
+    this.queue.push({ text, displayText: displayText ?? text });
     if (this.running) return;
     this.running = true;          // set synchronously so busy is observable immediately
     void this.drain();
@@ -42,20 +42,15 @@ export class AgentSession {
   private async drain(): Promise<void> {
     try {
       while (this.queue.length > 0) {
-        const { text, displayText, images } = this.queue.shift()!;
-        await this.runTurn(text, displayText, images);
+        const { text, displayText } = this.queue.shift()!;
+        await this.runTurn(text, displayText);
       }
     } finally { this.running = false; }
   }
 
-  private async runTurn(userText: string, displayText: string, images: ImageAttachment[]): Promise<void> {
-    const content: unknown[] = images.map((image) => ({
-      type: "image",
-      source: { type: "base64", media_type: image.mediaType, data: image.data },
-    }));
-    if (userText) content.push({ type: "text", text: userText });
-    this.messages.push({ role: "user", content });
-    await this.opts.store.append(this.opts.sessionId, { kind: "user", text: displayText, ts: Date.now(), images: images.length > 0 ? images : undefined });
+  private async runTurn(userText: string, displayText: string): Promise<void> {
+    this.messages.push({ role: "user", content: [{ type: "text", text: userText }] });
+    await this.opts.store.append(this.opts.sessionId, { kind: "user", text: displayText, ts: Date.now() });
 
     try {
       for (let round = 0; round < 25; round++) {
@@ -106,12 +101,7 @@ export function messagesFromEvents(events: SessionEvent[]): AnthropicMessage[] {
   for (const e of events) {
     if (e.kind === "user") {
       flushResults(); flushText(); flushTools();
-      const content: unknown[] = (e.images ?? []).map((image) => ({
-        type: "image",
-        source: { type: "base64", media_type: image.mediaType, data: image.data },
-      }));
-      if (e.text) content.push({ type: "text", text: e.text });
-      messages.push({ role: "user", content });
+      messages.push({ role: "user", content: [{ type: "text", text: e.text }] });
     } else if (e.kind === "assistantText") {
       flushResults(); flushTools();
       textBuf.push({ type: "text", text: e.text });

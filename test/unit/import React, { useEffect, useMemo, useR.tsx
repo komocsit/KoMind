@@ -1034,8 +1034,8 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
             <label className="check-row" htmlFor="km-edits">
               <input id="km-edits" type="checkbox" checked={autoApproveEdits} onChange={(e) => setAutoApproveEdits(e.target.checked)} />
               <span>
-                <b>Apply edits without approval</b>
-                <small>Every accepted edit is saved immediately</small>
+                <b>Apply file edits automatically</b>
+                <small>When off, every edit needs approval</small>
               </span>
             </label>
           </div>

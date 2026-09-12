@@ -158,22 +158,6 @@ describe("AgentSession", () => {
     expect(beforeNew[beforeNew.length - 1].role).toBe("assistant");
   });
 
-  it("messagesFromEvents restores persisted image blocks", () => {
-    const msgs = messagesFromEvents([{
-      kind: "user",
-      text: "describe this",
-      ts: 1,
-      images: [{ name: "diagram.png", mediaType: "image/png", data: "aW1hZ2U=" }],
-    }]);
-    expect(msgs).toEqual([{
-      role: "user",
-      content: [
-        { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
-        { type: "text", text: "describe this" },
-      ],
-    }]);
-  });
-
   it("messagesFromEvents reconstructs user/assistant/tool blocks in order", () => {
     const msgs = messagesFromEvents([
       { kind: "user", text: "hi", ts: 1 },
