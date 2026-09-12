@@ -6,11 +6,11 @@ export interface ProviderConfig { baseUrl: string; apiKey: string; model: string
 export type StreamEvent = { type: "textDelta"; text: string } | { type: "toolUse"; id: string; name: string; input: Record<string, unknown> } | { type: "endTurn" };
 export type AnthropicMessage = { role: "user" | "assistant"; content: unknown[] };
 export interface AnthropicClientLike {
-  messages: { stream(params: unknown): AsyncIterable<unknown> };
+  messages: { stream(params: unknown, options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
   models?: { list(params?: unknown): Promise<{ data?: { id?: string }[] } | AsyncIterable<{ id?: string }>> };
 }
 export interface Provider {
-  streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void): Promise<AnthropicMessage[]>;
+  streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal): Promise<AnthropicMessage[]>;
   setKey(key: string): void;
   setModel(model: string): void;
   setEffort(effort: Effort): void;
@@ -21,7 +21,12 @@ export interface Provider {
 
 export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): Provider {
   let client: AnthropicClientLike = sdk ?? new Anthropic({ baseURL: cfg.baseUrl, apiKey: cfg.apiKey });
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const abortError = () => Object.assign(new Error("Stopped"), { name: "AbortError" });
+  const sleepWithSignal = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(abortError()); }, { once: true });
+  });
 
   function setKey(key: string): void {
     cfg = { ...cfg, apiKey: key };
@@ -29,7 +34,7 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     // when an injected sdk is used (tests), the sdk object stays as-is — key swap is a no-op there
   }
 
-  async function streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void): Promise<AnthropicMessage[]> {
+  async function streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal): Promise<AnthropicMessage[]> {
     const params: Record<string, unknown> = {
       model: cfg.model,
       max_tokens: cfg.maxTokens,
@@ -40,11 +45,16 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     if (cfg.effort) params.reasoning_effort = cfg.effort;
     let stream: AsyncIterable<unknown>;
     for (let attempt = 0; ; attempt++) {
-      try { stream = client.messages.stream(params); break; }
+      try {
+        if (signal?.aborted) throw abortError();
+        stream = client.messages.stream(params, { signal });
+        break;
+      }
       catch (e: any) {
+        if (signal?.aborted || e?.name === "AbortError") throw abortError();
         const retryable = e?.status >= 500 || e?.code === "ETIMEDOUT" || e?.code === "ECONNRESET";
         if (!retryable || attempt >= 3) throw e;
-        await sleep(500 * 2 ** attempt);
+        await sleepWithSignal(500 * 2 ** attempt, signal);
       }
     }
 
@@ -60,20 +70,26 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
       currentTool = undefined;
     };
 
-    for await (const raw of stream) {
-      const ev = raw as any;
-      if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
-        currentTool = { id: ev.content_block.id, name: ev.content_block.name, json: "" };
-      } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-        text += ev.delta.text;
-        onEvent({ type: "textDelta", text: ev.delta.text });
-      } else if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && currentTool) {
-        currentTool.json += ev.delta.partial_json;
-      } else if (ev.type === "content_block_stop" && currentTool) {
-        flushTool();
-      } else if (ev.type === "message_stop") {
-        flushTool(); // some streams omit content_block_stop for tool_use blocks
+    try {
+      for await (const raw of stream) {
+        if (signal?.aborted) throw abortError();
+        const ev = raw as any;
+        if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
+          currentTool = { id: ev.content_block.id, name: ev.content_block.name, json: "" };
+        } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+          text += ev.delta.text;
+          onEvent({ type: "textDelta", text: ev.delta.text });
+        } else if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && currentTool) {
+          currentTool.json += ev.delta.partial_json;
+        } else if (ev.type === "content_block_stop" && currentTool) {
+          flushTool();
+        } else if (ev.type === "message_stop") {
+          flushTool(); // some streams omit content_block_stop for tool_use blocks
+        }
       }
+    } catch (e: any) {
+      if (signal?.aborted || e?.name === "AbortError") throw abortError();
+      throw e;
     }
     flushTool();
 

@@ -54,7 +54,7 @@ describe("createProvider.streamTurn", () => {
         }),
       },
     } as unknown as AnthropicClientLike;
-    await createProvider(cfg, sdk).streamTurn([], [], () => {});
+    await createProvider(cfg, sdk).streamTurn([], [], () => { });
     expect(calls).toBe(4); // 3 failures + 1 success
   });
 
@@ -64,8 +64,34 @@ describe("createProvider.streamTurn", () => {
         stream: vi.fn(() => { const e = new Error("bad request") as any; e.status = 400; throw e; }),
       },
     } as unknown as AnthropicClientLike;
-    await expect(createProvider(cfg, sdk).streamTurn([], [], () => {})).rejects.toThrow("bad request");
+    await expect(createProvider(cfg, sdk).streamTurn([], [], () => { })).rejects.toThrow("bad request");
     expect(sdk.messages.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes an abort signal to the SDK and rejects when stopped", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const sdk = {
+      messages: {
+        stream: vi.fn((_params: unknown, options?: { signal?: AbortSignal }) => {
+          receivedSignal = options?.signal;
+          return (async function* () {
+            markStarted();
+            await new Promise<void>((_resolve, reject) => {
+              if (options?.signal?.aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+              options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+            });
+          })();
+        }),
+      },
+    } as unknown as AnthropicClientLike;
+    const controller = new AbortController();
+    const turn = createProvider(cfg, sdk).streamTurn([], [], () => { }, controller.signal);
+    await started;
+    controller.abort();
+    await expect(turn).rejects.toMatchObject({ name: "AbortError" });
+    expect(receivedSignal).toBe(controller.signal);
   });
 
   it("setKey replaces the client and the next call uses it", async () => {

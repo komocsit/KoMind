@@ -72,7 +72,7 @@
             "medium",
             "high"
           ],
-          "default": "medium",
+          "default": "high",
           "description": "Default reasoning effort sent to the API"
         },
         "koMind.autoApproveEdits": {

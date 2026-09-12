@@ -26,6 +26,7 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 | `koMind.baseUrl` | `https://api.justwoker.icu` | API base URL (Anthropic-compatible) |
 | `koMind.model` | `gpt-5.6-sol` | Model name sent to the API |
 | `koMind.maxTokens` | `4096` | Max tokens per completion |
+| `koMind.effort` | `high` | Default reasoning effort sent to the API |
 | `koMind.autoApproveEdits` | `true` | Apply file edits automatically |
 | `koMind.autoApproveTerminal` | `false` | Require approval for terminal commands |
 

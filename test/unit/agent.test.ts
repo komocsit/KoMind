@@ -110,6 +110,32 @@ describe("AgentSession", () => {
     expect(provider.calls.length).toBe(2);
   });
 
+  it("stops an active provider turn without reporting an error", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const provider: Provider = {
+      setKey() { }, setModel() { }, setEffort() { }, setBaseUrl() { }, setMaxTokens() { },
+      async listModels() { return []; },
+      async streamTurn(_messages, _tools, _onEvent, signal) {
+        markStarted();
+        if (signal?.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(Object.assign(new Error("Stopped"), { name: "AbortError" })), { once: true });
+        });
+        return [];
+      },
+    };
+    const ui = { textDelta: vi.fn(), toolCall: vi.fn(), toolResult: vi.fn(), error: vi.fn(), turnComplete: vi.fn(), turnStopped: vi.fn() };
+    const store = new SessionStore(dir);
+    const session = new AgentSession({ sessionId: store.createSession().id, provider, ctx: ctx(), store, ui });
+    session.send("keep working");
+    await started;
+    expect(session.stop()).toBe(true);
+    await vi.waitFor(() => expect(ui.turnStopped).toHaveBeenCalledOnce());
+    expect(ui.error).not.toHaveBeenCalled();
+    expect(session.busy).toBe(false);
+  });
+
   it("surfaces provider errors via ui.error and unlocks", async () => {
     const provider: Provider = {
       async streamTurn() { throw new Error("boom"); },

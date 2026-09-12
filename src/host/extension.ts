@@ -48,7 +48,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private store!: SessionStore;
   private baseProvider!: Provider;
   private currentModel!: string;
-  private currentEffort: Effort = "medium";
+  private currentEffort: Effort = "high";
   private models: string[] = [];
   private contextEnabled = false;
   private contextInjected = new Set<string>();
@@ -115,9 +115,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const settingsModel = cfg.get("model", "gpt-5.6-sol");
     this.currentModel = this.context.workspaceState.get<string>("koMind.model") ?? settingsModel;
     const savedEffort = this.context.workspaceState.get<string>("koMind.effort");
-    const settingsEffort = cfg.get<string>("effort", "medium");
+    const settingsEffort = cfg.get<string>("effort", "high");
     this.currentEffort = EFFORTS.includes(savedEffort as Effort) ? (savedEffort as Effort)
-      : EFFORTS.includes(settingsEffort as Effort) ? (settingsEffort as Effort) : "medium";
+      : EFFORTS.includes(settingsEffort as Effort) ? (settingsEffort as Effort) : "high";
     // base list: user-configured models from settings + current selection
     this.models = this.mergeModels(cfg.get<string[]>("models", []));
 
@@ -184,13 +184,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const secrets = this.context.secrets;
     let keyCached: string | null = null;
     const provider: Provider = {
-      async streamTurn(messages, tools, onEvent) {
+      async streamTurn(messages, tools, onEvent, signal) {
         if (!keyCached) {
           keyCached = (await secrets.get("koMind.apiKey")) ?? null;
           if (!keyCached) throw new Error("No API key set. Run command 'KoMind: Set API Key'.");
           baseProvider.setKey(keyCached);
         }
-        return baseProvider.streamTurn(messages, tools, onEvent);
+        return baseProvider.streamTurn(messages, tools, onEvent, signal);
       },
       setKey: (k: string) => baseProvider.setKey(k),
       setModel: (m: string) => baseProvider.setModel(m),
@@ -206,6 +206,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       toolResult: (callId: string, ok: boolean, output: string) => this.post({ type: "toolResult", sessionId: id, callId, ok, output }),
       error: (message: string) => this.post({ type: "error", sessionId: id, message }),
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
+      turnStopped: () => this.post({ type: "turnStopped", sessionId: id }),
     };
     return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(), store: this.store, ui, initialMessages });
   }
@@ -236,22 +237,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!ok) throw new Error("Edit rejected by editor.");
         if (!await doc.save()) throw new Error("Edited file could not be saved.");
       },
-      async runTerminal(command, cwd, onOutput) {
+      async runTerminal(command, cwd, onOutput, signal) {
         return new Promise((resolve) => {
+          let settled = false;
+          const finish = (exitCode: number) => {
+            if (settled) return;
+            settled = true;
+            resolve({ exitCode });
+          };
           const opts: cp.ExecOptions = { cwd };
           const proc = cp.exec(command, opts, (err: cp.ExecException | null) => {
             const code = err && typeof err.code === "number" ? err.code : err ? 1 : 0;
-            resolve({ exitCode: code });
+            finish(code);
           });
+          const stop = () => {
+            if (proc.pid === undefined) return finish(1);
+            if (process.platform === "win32") {
+              cp.execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], () => finish(1));
+            } else {
+              proc.kill("SIGTERM");
+              finish(1);
+            }
+          };
+          if (signal?.aborted) stop();
+          else signal?.addEventListener("abort", stop, { once: true });
           proc.stdout?.on("data", (d) => onOutput(d.toString()));
           proc.stderr?.on("data", (d) => onOutput(d.toString()));
         });
       },
-      requestApproval: (command, callId, tool) => {
+      requestApproval: (command, callId, tool, signal) => {
         // persistent "always allow" grants bypass the approval card
         if (tool === "run_terminal" && this.alwaysAllow.terminal) return Promise.resolve(true);
         if (tool === "apply_edit" && this.alwaysAllow.edits) return Promise.resolve(true);
-        return this.approvals.request(this.currentSessionId ?? "", callId, command, tool ?? "run_terminal");
+        return this.approvals.request(this.currentSessionId ?? "", callId, command, tool ?? "run_terminal", signal);
       },
       workspaceRoot: root,
       autoApproveEdits: cfg.get("autoApproveEdits", true),
@@ -287,6 +305,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "attachFiles": await this.pickFiles(); break;
+      case "stop": {
+        const session = this.sessions.get(m.sessionId);
+        if (!session?.stop()) this.post({ type: "turnStopped", sessionId: m.sessionId });
+        break;
+      }
       case "attachFolder": await this.pickFolder(); break;
       case "setContextEnabled": {
         this.contextEnabled = m.enabled;
@@ -327,6 +350,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "requestSessionList": await this.sendSessionList(); break;
+      case "deleteSession": {
+        const session = this.sessions.get(m.sessionId);
+        if (session?.busy) session.stop();
+        this.sessions.delete(m.sessionId);
+        this.contextInjected.delete(m.sessionId);
+        await this.store.delete(m.sessionId);
+        if (this.currentSessionId === m.sessionId) this.startSession();
+        await this.sendSessionList();
+        break;
+      }
+      case "setSessionArchived": {
+        await this.store.setArchived(m.sessionId, m.archived);
+        if (m.archived && this.currentSessionId === m.sessionId) this.startSession();
+        await this.sendSessionList();
+        break;
+      }
       case "loadSession": {
         if (!this.sessions.has(m.sessionId)) {
           const events = await this.store.load(m.sessionId);

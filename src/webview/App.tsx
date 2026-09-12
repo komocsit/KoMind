@@ -73,7 +73,7 @@ const CSS = `
     flex: none;
   }
   .brand { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; letter-spacing: 0.2px; }
-  .brand .brand-logo { width: 22px; height: 22px; object-fit: contain; flex: none; }
+  .brand .brand-logo { width: 39.6px; height: 39.6px; object-fit: contain; flex: none; }
   .header .spacer { flex: 1; }
   .icon-btn { padding: 4px 7px; min-height: 28px; }
   .attach-menu-wrap { position: relative; flex: none; }
@@ -239,13 +239,21 @@ const CSS = `
     font-weight: 600; font-size: 12px;
   }
   .history-head button { margin-left: auto; }
+  .history-tabs { display: flex; gap: 4px; padding: 6px 8px 2px; }
+  .history-tabs button { flex: 1; justify-content: center; border: none; background: transparent; }
+  .history-tabs button.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
   .history-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .history-row { display: flex; align-items: center; gap: 3px; border-radius: var(--km-radius-sm); }
+  .history-row:hover { background: var(--vscode-list-hoverBackground); }
   .history-item {
-    display: block; width: 100%; text-align: left; font-weight: 400;
+    display: block; flex: 1; min-width: 0; text-align: left; font-weight: 400;
     padding: 8px 10px; min-height: 34px; border: none; border-radius: var(--km-radius-sm);
     background: transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .history-item:hover { background: var(--vscode-list-hoverBackground); }
+  .history-item:hover { background: transparent; }
+  .history-action { flex: none; padding: 4px 6px; min-width: 26px; border: none; background: transparent; opacity: 0.65; }
+  .history-action:hover { opacity: 1; }
+  .history-action.delete:hover { color: var(--vscode-errorForeground); }
   .history-empty { padding: 20px 12px; text-align: center; opacity: 0.6; font-size: 12px; }
 
   /* Chat scroll area */
@@ -314,17 +322,24 @@ const CSS = `
   /* KoMind-branded loading state */
   .komind-loading { display: inline-flex; align-items: center; gap: 8px; padding: 8px 2px; opacity: 0.85; }
   .komind-loading img { width: 28px; height: 28px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
-  .komind-loading span { font-size: 11px; opacity: 0.7; }
+  .komind-loading span {
+    font-size: 11px;
+    font-weight: 700;
+    opacity: 1;
+    transition: color 180ms ease;
+  }
+  .komind-loading .progress-color-0 { color: var(--vscode-charts-blue, #4daafc); }
+  .komind-loading .progress-color-1 { color: var(--vscode-charts-green, #89d185); }
+  .komind-loading .progress-color-2 { color: var(--vscode-charts-purple, #b180d7); }
+  .komind-loading .progress-color-3 { color: var(--vscode-charts-orange, #d18616); }
+  .komind-loading .progress-color-4 { color: var(--vscode-charts-yellow, #cca700); }
+  .komind-loading .progress-color-5 { color: var(--vscode-charts-red, #f48771); }
+  .komind-loading .progress-color-6 { color: var(--vscode-textLink-foreground, #3794ff); }
   .komind-status-logo { width: 16px; height: 16px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
   @keyframes km-brand-pulse {
     0%, 100% { transform: scale(0.9); opacity: 0.5; }
     50% { transform: scale(1); opacity: 1; }
   }
-
-  /* KoMind assistant identity */
-  .assistant { display: flex; align-items: flex-start; gap: 8px; }
-  .assistant-mark { width: 24px; height: 24px; object-fit: contain; flex: none; margin-top: 2px; }
-  .assistant-content { flex: 1; min-width: 0; }
 
   /* Tool card */
   .tool-card {
@@ -355,6 +370,17 @@ const CSS = `
   .spin { animation: km-spin 1s linear infinite; }
   @keyframes km-spin { to { transform: rotate(360deg); } }
   .tool-body { padding: 0 10px 8px; }
+  .tool-summary {
+    padding: 0 10px 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    opacity: 0.75;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .tool-args { font-size: 11px; opacity: 0.65; margin-top: -2px; margin-bottom: 4px;
     font-family: var(--vscode-editor-font-family, monospace);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -430,6 +456,12 @@ const CSS = `
     border-color: transparent; border-radius: var(--km-radius);
   }
   .composer .send-btn:hover { background: var(--vscode-button-hoverBackground); }
+  .composer .send-btn.stop {
+    background: var(--vscode-errorForeground);
+    color: var(--vscode-editor-background, #fff);
+  }
+  .composer .send-btn.stop:hover { opacity: 0.85; }
+  .stop-square { width: 10px; height: 10px; border-radius: 1px; background: currentColor; }
   .composer .hint { margin-top: 5px; font-size: 10.5px; opacity: 0.55; text-align: center; }
   .paste-error { margin: 0 0 6px; color: var(--vscode-errorForeground); font-size: 11px; }
 
@@ -453,6 +485,8 @@ const IconGear = () => (
   </svg>
 );
 const IconTrash = () => (<svg {...iconProps} width={12} height={12}><path d="M3 6h18" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" /><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>);
+const IconArchive = () => (<svg {...iconProps} width={13} height={13}><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>);
+const IconUnarchive = () => (<svg {...iconProps} width={13} height={13}><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M12 17v-5M9 15l3-3 3 3" /></svg>);
 const IconPaperclip = () => (<svg {...iconProps} width={14} height={14}><path d="M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>);
 const IconMenuFolder = () => (<svg {...iconProps} width={14} height={14}><path d="M3 6a2 2 0 012-2h5l2 3h7a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>);
 const IconSlashBox = () => (<svg {...iconProps} width={14} height={14}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M14 7l-4 10" /></svg>);
@@ -507,6 +541,15 @@ const SUPPORTED_IMAGE_TYPES = new Set<ImageAttachment["mediaType"]>(["image/jpeg
 const MAX_PASTED_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGES_PER_MESSAGE = 5;
+const PROGRESS_MESSAGES = [
+  "Clue gathering…",
+  "Working through it…",
+  "Mapping the next step…",
+  "Piecing it together…",
+  "Checking the details…",
+  "Building a response…",
+  "Almost there…",
+] as const;
 
 function base64Bytes(data: string): number {
   return Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
@@ -535,11 +578,15 @@ export default function App() {
   const [cards, setCards] = useState<Card[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [sessionList, setSessionList] = useState<{ id: string; firstUserMessage: string }[]>([]);
+  const [stopping, setStopping] = useState(false);
+  const [progressMessage, setProgressMessage] = useState<string>(PROGRESS_MESSAGES[0]);
+  const [progressColor, setProgressColor] = useState(0);
+  const [sessionList, setSessionList] = useState<{ id: string; firstUserMessage: string; archived: boolean }[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyTab, setHistoryTab] = useState<"active" | "archived">("active");
   const [model, setModel] = useState("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [effort, setEffort] = useState<Effort>("medium");
+  const [effort, setEffort] = useState<Effort>("high");
   const [menuOpen, setMenuOpen] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [newModel, setNewModel] = useState("");
@@ -566,7 +613,10 @@ export default function App() {
     }
 
     onHostMessage((m: HostToWebviewMsg) => {
-      if (m.type === "turnComplete" || m.type === "error") setStreaming(false);
+      if (m.type === "turnComplete" || m.type === "turnStopped" || m.type === "error") {
+        setStreaming(false);
+        setStopping(false);
+      }
       setCards((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -574,10 +624,12 @@ export default function App() {
           case "newSession":
             sessionIdRef.current = "";
             setStreaming(false);
+            setStopping(false);
             return [];
           case "loadEvents":
             sessionIdRef.current = m.sessionId;
             setStreaming(false);
+            setStopping(false);
             return eventsToCards(m.events);
           case "textDelta":
             sessionIdRef.current = m.sessionId;
@@ -601,6 +653,8 @@ export default function App() {
             next.push({ kind: "error", text: m.message });
             return next;
           case "turnComplete":
+            return next;
+          case "turnStopped":
             return next;
           case "sessionList":
             setSessionList(m.sessions);
@@ -654,6 +708,19 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [cards, streaming]);
 
+  useEffect(() => {
+    if (!streaming) return;
+    let index = Math.floor(Math.random() * PROGRESS_MESSAGES.length);
+    setProgressMessage(PROGRESS_MESSAGES[index]);
+    setProgressColor(index);
+    const timer = window.setInterval(() => {
+      index = (index + 1) % PROGRESS_MESSAGES.length;
+      setProgressMessage(PROGRESS_MESSAGES[index]);
+      setProgressColor(index);
+    }, 2400);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+
   // keyboard shortcuts for the pending approval: A approve · Shift+A always allow · R reject
   const pendingApprovalCard = cards.find((c) => c.kind === "tool" && c.pendingApproval);
   useEffect(() => {
@@ -691,7 +758,7 @@ export default function App() {
 
   const submit = (text?: string) => {
     const value = (text ?? input).trim();
-    if ((!value && attachments.length === 0 && images.length === 0) || !sessionIdRef.current) return;
+    if ((!value && attachments.length === 0 && images.length === 0) || !sessionIdRef.current || streaming) return;
     send({
       type: "userMessage",
       sessionId: sessionIdRef.current,
@@ -753,6 +820,20 @@ export default function App() {
     if (sessionIdRef.current) send({ type: "retry", sessionId: sessionIdRef.current });
   };
 
+  const stop = () => {
+    if (sessionIdRef.current && streaming && !stopping) {
+      setStopping(true);
+      send({ type: "stop", sessionId: sessionIdRef.current });
+    }
+  };
+
+  const deleteSession = (sessionId: string, title: string) => {
+    if (!window.confirm(`Delete “${title.slice(0, 80)}”? This cannot be undone.`)) return;
+    send({ type: "deleteSession", sessionId });
+  };
+
+  const visibleSessions = sessionList.filter((session) => session.archived === (historyTab === "archived"));
+
   const suggestions = [
     "Explain the structure of this project",
     "Read a.txt and summarize it",
@@ -785,19 +866,44 @@ export default function App() {
               <IconChevronLeft />
             </button>
           </div>
+          <div className="history-tabs" role="tablist" aria-label="Chat history sections">
+            <button className={historyTab === "active" ? "active" : ""} onClick={() => setHistoryTab("active")} role="tab" aria-selected={historyTab === "active"}>
+              Chats
+            </button>
+            <button className={historyTab === "archived" ? "active" : ""} onClick={() => setHistoryTab("archived")} role="tab" aria-selected={historyTab === "archived"}>
+              Archived
+            </button>
+          </div>
           <div className="history-list">
-            {sessionList.length === 0 ? (
-              <div className="history-empty">No previous sessions yet.</div>
+            {visibleSessions.length === 0 ? (
+              <div className="history-empty">{historyTab === "archived" ? "No archived chats." : "No previous sessions yet."}</div>
             ) : (
-              sessionList.map((s) => (
-                <button
-                  key={s.id}
-                  className="history-item"
-                  title={s.firstUserMessage}
-                  onClick={() => { send({ type: "loadSession", sessionId: s.id }); setHistoryOpen(false); }}
-                >
-                  {s.firstUserMessage.slice(0, 60)}
-                </button>
+              visibleSessions.map((s) => (
+                <div className="history-row" key={s.id}>
+                  <button
+                    className="history-item"
+                    title={s.firstUserMessage}
+                    onClick={() => { send({ type: "loadSession", sessionId: s.id }); setHistoryOpen(false); }}
+                  >
+                    {s.firstUserMessage.slice(0, 60)}
+                  </button>
+                  <button
+                    className="history-action"
+                    title={s.archived ? "Restore chat" : "Archive chat"}
+                    aria-label={s.archived ? `Restore ${s.firstUserMessage}` : `Archive ${s.firstUserMessage}`}
+                    onClick={() => send({ type: "setSessionArchived", sessionId: s.id, archived: !s.archived })}
+                  >
+                    {s.archived ? <IconUnarchive /> : <IconArchive />}
+                  </button>
+                  <button
+                    className="history-action delete"
+                    title="Delete chat"
+                    aria-label={`Delete ${s.firstUserMessage}`}
+                    onClick={() => deleteSession(s.id, s.firstUserMessage)}
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
               ))
             )}
           </div>
@@ -828,9 +934,9 @@ export default function App() {
           <>
             {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
             {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
-              <div className="komind-loading" role="status" aria-label="KoMind is thinking">
+              <div className="komind-loading" role="status" aria-live="polite" aria-label={`KoMind: ${progressMessage}`}>
                 <img src={logoUrl} alt="" />
-                <span>KoMind is thinking…</span>
+                <span className={`progress-color-${progressColor}`}>{progressMessage}</span>
               </div>
             )}
           </>
@@ -1024,17 +1130,23 @@ export default function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onPaste={(e) => void onPaste(e)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!streaming) submit();
+              }
+            }}
             placeholder="Ask KoMind anything… Paste an image with Ctrl+V"
             aria-label="Message KoMind"
           />
           <button
-            className="send-btn"
-            onClick={() => submit()}
-            disabled={(!input.trim() && attachments.length === 0 && images.length === 0) || !sessionIdRef.current}
-            title="Send (Enter)"
+            className={`send-btn ${streaming ? "stop" : ""}`}
+            onClick={streaming ? stop : () => submit()}
+            disabled={stopping || (!streaming && ((!input.trim() && attachments.length === 0 && images.length === 0) || !sessionIdRef.current))}
+            title={streaming ? (stopping ? "Stopping…" : "Stop processing") : "Send (Enter)"}
+            aria-label={streaming ? (stopping ? "Stopping processing" : "Stop processing") : "Send message"}
           >
-            <IconSend />
+            {streaming ? <span className="stop-square" aria-hidden="true" /> : <IconSend />}
           </button>
         </div>
         <div className="hint">
@@ -1185,8 +1297,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   if (card.kind === "assistant") {
     return (
       <div className="assistant">
-        <img src={logoUrl} alt="KoMind" className="assistant-mark" />
-        <div className="assistant-content"><Markdown text={card.text ?? ""} /></div>
+        <Markdown text={card.text ?? ""} />
       </div>
     );
   }
@@ -1222,10 +1333,13 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   const doneErr = (card.output !== undefined && card.ok === false) || rejected;
   const statusClass = awaiting ? "awaiting" : running ? "running" : doneErr ? "done-err" : doneOk ? "done-ok" : "";
   const statusIcon = awaiting ? <IconClock /> : running ? <img src={logoUrl} alt="" className="komind-status-logo" /> : rejected ? <IconX /> : doneErr ? <IconX /> : <IconCheck />;
-  const statusText = awaiting ? "Awaiting approval" : running ? "Running" : rejected ? "Rejected" : doneErr ? "Failed" : "Done";
+  const statusText = awaiting ? "Awaiting approval" : running ? "In progress" : rejected ? "Rejected" : doneErr ? "Failed" : "Done";
   const statusColor = awaiting ? "var(--km-warn)" : doneErr || rejected ? "var(--vscode-errorForeground)" : doneOk ? "var(--km-accent)" : "var(--vscode-foreground)";
 
   const args = card.input?.path ? String(card.input.path) : "";
+  const summary = card.tool === "run_terminal"
+    ? String(card.input?.command ?? "")
+    : args;
 
   return (
     <div className={`tool-card ${statusClass}`}>
@@ -1243,7 +1357,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
         </span>
         <span className={`tool-chevron ${expanded ? "expanded" : ""}`}><IconChevronDown /></span>
       </button>
-      {expanded && args && <div className="tool-body"><div className="tool-args" title={args}>{args}</div></div>}
+      {summary && <div className="tool-summary" title={summary}>{summary}</div>}
       {expanded && card.pendingApproval && (
         <div className="tool-body">
           <div className="cmd-block">{card.pendingApproval}</div>

@@ -30,8 +30,9 @@ export type HostToWebviewMsg =
   | { type: "approvalResolved"; sessionId: string; callId: string; approved: boolean }
   | { type: "error"; sessionId: string; message: string }
   | { type: "turnComplete"; sessionId: string }
+  | { type: "turnStopped"; sessionId: string }
   | { type: "newSession" }
-  | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number }[] }
+  | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number; archived: boolean }[] }
   | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
   | { type: "config"; model: string; models: string[]; effort: Effort; mode: Mode; alwaysAllow: { terminal: boolean; edits: boolean } }
   | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean }
@@ -44,9 +45,12 @@ export type WebviewToHostMsg =
   | { type: "approve"; callId: string; approved: boolean; always?: boolean }
   | { type: "newSessionRequest" }
   | { type: "requestCurrentSession" }
+  | { type: "stop"; sessionId: string }
   | { type: "retry"; sessionId: string }
   | { type: "requestSessionList" }
   | { type: "loadSession"; sessionId: string }
+  | { type: "deleteSession"; sessionId: string }
+  | { type: "setSessionArchived"; sessionId: string; archived: boolean }
   | { type: "requestConfig" }
   | { type: "setModel"; model: string }
   | { type: "addModel"; model: string }

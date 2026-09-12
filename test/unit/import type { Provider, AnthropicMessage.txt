@@ -9,15 +9,12 @@ export interface AgentUi {
   toolResult(callId: string, ok: boolean, output: string): void;
   error(msg: string): void;
   turnComplete(): void;
-  turnStopped?(): void;
 }
 
 export class AgentSession {
   private messages: AnthropicMessage[] = [];
   private queue: { text: string; displayText: string; images: ImageAttachment[] }[] = [];
   private running = false;
-  private abortController?: AbortController;
-  private stopped = false;
   /** Tool names the agent may use; null = all tools (build mode). */
   allowedTools: ToolName[] | null = null;
 
@@ -42,29 +39,16 @@ export class AgentSession {
     void this.drain();
   }
 
-  stop(): boolean {
-    if (!this.running) return false;
-    this.stopped = true;
-    this.queue = [];
-    this.abortController?.abort();
-    return true;
-  }
-
   private async drain(): Promise<void> {
     try {
-      while (this.queue.length > 0 && !this.stopped) {
+      while (this.queue.length > 0) {
         const { text, displayText, images } = this.queue.shift()!;
-        this.abortController = new AbortController();
-        await this.runTurn(text, displayText, images, this.abortController.signal);
+        await this.runTurn(text, displayText, images);
       }
-    } finally {
-      this.abortController = undefined;
-      this.stopped = false;
-      this.running = false;
-    }
+    } finally { this.running = false; }
   }
 
-  private async runTurn(userText: string, displayText: string, images: ImageAttachment[], signal: AbortSignal): Promise<void> {
+  private async runTurn(userText: string, displayText: string, images: ImageAttachment[]): Promise<void> {
     const content: unknown[] = images.map((image) => ({
       type: "image",
       source: { type: "base64", media_type: image.mediaType, data: image.data },
@@ -73,22 +57,12 @@ export class AgentSession {
     this.messages.push({ role: "user", content });
     await this.opts.store.append(this.opts.sessionId, { kind: "user", text: displayText, ts: Date.now(), images: images.length > 0 ? images : undefined });
 
-    let partialText = "";
-    let activeTool: { id: string; name: string } | undefined;
     try {
       for (let round = 0; round < 25; round++) {
-        partialText = "";
         const assistantMsgs = await this.opts.provider.streamTurn(this.messages, this.tools, (e) => {
-          if (signal.aborted) return;
-          if (e.type === "textDelta") {
-            partialText += e.text;
-            this.opts.ui.textDelta(e.text);
-          }
-          else if (e.type === "toolUse") {
-            this.opts.ui.toolCall(e.id, e.name, e.input);
-          }
-        }, signal);
-        if (signal.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
+          if (e.type === "textDelta") this.opts.ui.textDelta(e.text);
+          else if (e.type === "toolUse") this.opts.ui.toolCall(e.id, e.name, e.input);
+        });
         this.messages.push(...assistantMsgs);
         const assistantMsg = assistantMsgs[assistantMsgs.length - 1];
 
@@ -103,11 +77,8 @@ export class AgentSession {
 
         const results: unknown[] = [];
         for (const tu of toolUses) {
-          activeTool = { id: tu.id, name: tu.name };
-          if (signal.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
           await this.opts.store.append(this.opts.sessionId, { kind: "toolCall", callId: tu.id, tool: tu.name, input: tu.input, ts: Date.now() });
-          const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx, signal);
-          activeTool = undefined;
+          const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx);
           this.opts.ui.toolResult(tu.id, r.ok, r.output);
           await this.opts.store.append(this.opts.sessionId, { kind: "toolResult", callId: tu.id, ok: r.ok, output: r.output, ts: Date.now() });
           results.push({ type: "tool_result", tool_use_id: tu.id, content: r.output, is_error: !r.ok });
@@ -117,15 +88,6 @@ export class AgentSession {
       this.opts.ui.error("Max tool rounds (25) reached.");
       this.opts.ui.turnComplete();
     } catch (e) {
-      if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {
-        if (partialText) {
-          this.messages.push({ role: "assistant", content: [{ type: "text", text: partialText }] });
-          await this.opts.store.append(this.opts.sessionId, { kind: "assistantText", text: partialText, ts: Date.now() });
-        }
-        if (activeTool) this.opts.ui.toolResult(activeTool.id, false, "Stopped by user.");
-        this.opts.ui.turnStopped?.();
-        return;
-      }
       const msg = e instanceof Error ? e.message : String(e);
       this.opts.ui.error(msg);
       await this.opts.store.append(this.opts.sessionId, { kind: "error", message: msg, ts: Date.now() });
@@ -148,7 +110,7 @@ export function messagesFromEvents(events: SessionEvent[]): AnthropicMessage[] {
         type: "image",
         source: { type: "base64", media_type: image.mediaType, data: image.data },
       }));
-      if (e.text) content.push({ type: "text", text: e.text });
+      content.push({ type: "text", text: e.text });
       messages.push({ role: "user", content });
     } else if (e.kind === "assistantText") {
       flushResults(); flushTools();
