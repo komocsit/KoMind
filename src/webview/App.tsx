@@ -311,19 +311,20 @@ const CSS = `
   .md th { background: var(--vscode-list-hoverBackground); }
   .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
 
-  /* Streaming dots */
-  .dots { display: inline-flex; gap: 4px; padding: 8px 2px; }
-  .dots span {
-    width: 5px; height: 5px; border-radius: 50%;
-    background: var(--vscode-foreground); opacity: 0.4;
-    animation: km-bounce 1.2s infinite ease-in-out;
+  /* KoMind-branded loading state */
+  .komind-loading { display: inline-flex; align-items: center; gap: 8px; padding: 8px 2px; opacity: 0.85; }
+  .komind-loading img { width: 28px; height: 28px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
+  .komind-loading span { font-size: 11px; opacity: 0.7; }
+  .komind-status-logo { width: 16px; height: 16px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
+  @keyframes km-brand-pulse {
+    0%, 100% { transform: scale(0.9); opacity: 0.5; }
+    50% { transform: scale(1); opacity: 1; }
   }
-  .dots span:nth-child(2) { animation-delay: 0.15s; }
-  .dots span:nth-child(3) { animation-delay: 0.3s; }
-  @keyframes km-bounce {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-4px); opacity: 0.9; }
-  }
+
+  /* KoMind assistant identity */
+  .assistant { display: flex; align-items: flex-start; gap: 8px; }
+  .assistant-mark { width: 24px; height: 24px; object-fit: contain; flex: none; margin-top: 2px; }
+  .assistant-content { flex: 1; min-width: 0; }
 
   /* Tool card */
   .tool-card {
@@ -338,14 +339,19 @@ const CSS = `
   .tool-card.done-ok { border-color: color-mix(in srgb, var(--km-accent) 40%, var(--vscode-panel-border)); }
   .tool-card.done-err { border-color: color-mix(in srgb, var(--vscode-errorForeground) 45%, var(--vscode-panel-border)); }
   .tool-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 10px;
+    display: flex; width: 100%; align-items: center; gap: 8px;
+    min-height: 34px; padding: 6px 10px;
+    color: var(--vscode-foreground); background: transparent;
+    border: none; border-radius: 0;
     font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 12px;
+    font-size: 12px; text-align: left;
   }
+  .tool-head:hover { background: var(--vscode-list-hoverBackground); }
   .tool-name { font-weight: 600; }
   .tool-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; opacity: 0.9; }
   .tool-status svg { flex: none; }
+  .tool-chevron { display: inline-flex; flex: none; opacity: 0.65; transition: transform var(--km-transition); }
+  .tool-chevron.expanded { transform: rotate(180deg); }
   .spin { animation: km-spin 1s linear infinite; }
   @keyframes km-spin { to { transform: rotate(360deg); } }
   .tool-body { padding: 0 10px 8px; }
@@ -465,7 +471,6 @@ const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20
 const IconX = () => (<svg {...iconProps} width={13} height={13}><path d="M18 6L6 18M6 6l12 12" /></svg>);
 const IconClock = () => (<svg {...iconProps} width={13} height={13}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>);
 const IconAlert = () => (<svg {...iconProps} width={15} height={15}><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /><path d="M12 9v4M12 17h.01" /></svg>);
-const IconSpinner = () => (<svg {...iconProps} width={13} height={13} className="spin"><path d="M21 12a9 9 0 11-6.2-8.56" /></svg>);
 const IconFile = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
 const IconFolder = () => (<svg {...iconProps} width={13} height={13}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>);
 const IconPencil = () => (<svg {...iconProps} width={13} height={13}><path d="M17 3a2.8 2.8 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>);
@@ -551,8 +556,6 @@ export default function App() {
   const imageSequenceRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const chatRef = useRef<HTMLDivElement>(null);
-  const nearBottomRef = useRef(true);
 
   useEffect(() => {
     // remove the host-rendered loading splash once React has mounted
@@ -638,15 +641,17 @@ export default function App() {
         }
       });
     });
+    // The host may create the first session before this webview is ready to
+    // receive messages, so explicitly request it after mounting.
+    send({ type: "requestCurrentSession" });
     send({ type: "requestSessionList" });
     send({ type: "requestConfig" });
     send({ type: "requestSettings" });
   }, []);
 
   useEffect(() => {
-    if (nearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
+    // Keep the active process in view as text and tool steps stream in.
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [cards, streaming]);
 
   // keyboard shortcuts for the pending approval: A approve · Shift+A always allow · R reject
@@ -669,12 +674,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pendingApprovalCard]);
-
-  const onChatScroll = () => {
-    const el = chatRef.current;
-    if (!el) return;
-    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -710,7 +709,6 @@ export default function App() {
     setImages([]);
     setPasteError("");
     setStreaming(true);
-    nearBottomRef.current = true;
   };
 
   const onPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -814,7 +812,7 @@ export default function App() {
         />
       )}
 
-      <div className="chat" ref={chatRef} onScroll={onChatScroll}>
+      <div className="chat">
         {cards.length === 0 && !streaming ? (
           <div className="empty">
             <img src={logoUrl} alt="KoMind logo" className="logo-img" />
@@ -830,7 +828,10 @@ export default function App() {
           <>
             {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
             {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
-              <div className="dots" aria-label="Thinking"><span /><span /><span /></div>
+              <div className="komind-loading" role="status" aria-label="KoMind is thinking">
+                <img src={logoUrl} alt="" />
+                <span>KoMind is thinking…</span>
+              </div>
             )}
           </>
         )}
@@ -1179,10 +1180,13 @@ function eventsToCards(events: SessionEvent[]): Card[] {
 }
 
 function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (card.kind === "assistant") {
     return (
       <div className="assistant">
-        <Markdown text={card.text ?? ""} />
+        <img src={logoUrl} alt="KoMind" className="assistant-mark" />
+        <div className="assistant-content"><Markdown text={card.text ?? ""} /></div>
       </div>
     );
   }
@@ -1217,7 +1221,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   const doneOk = card.output !== undefined && card.ok === true;
   const doneErr = (card.output !== undefined && card.ok === false) || rejected;
   const statusClass = awaiting ? "awaiting" : running ? "running" : doneErr ? "done-err" : doneOk ? "done-ok" : "";
-  const statusIcon = awaiting ? <IconClock /> : running ? <IconSpinner /> : rejected ? <IconX /> : doneErr ? <IconX /> : <IconCheck />;
+  const statusIcon = awaiting ? <IconClock /> : running ? <img src={logoUrl} alt="" className="komind-status-logo" /> : rejected ? <IconX /> : doneErr ? <IconX /> : <IconCheck />;
   const statusText = awaiting ? "Awaiting approval" : running ? "Running" : rejected ? "Rejected" : doneErr ? "Failed" : "Done";
   const statusColor = awaiting ? "var(--km-warn)" : doneErr || rejected ? "var(--vscode-errorForeground)" : doneOk ? "var(--km-accent)" : "var(--vscode-foreground)";
 
@@ -1225,17 +1229,28 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
 
   return (
     <div className={`tool-card ${statusClass}`}>
-      <div className="tool-head">
+      <button
+        type="button"
+        className="tool-head"
+        onClick={() => setExpanded((open) => !open)}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${TOOL_LABEL[card.tool ?? ""] ?? card.tool} details`}
+      >
         {toolIcon(card.tool)}
         <span className="tool-name">{TOOL_LABEL[card.tool ?? ""] ?? card.tool}</span>
         <span className="tool-status" style={{ color: statusColor }}>
           {statusIcon} {statusText}
         </span>
-      </div>
-      {args && <div className="tool-body"><div className="tool-args" title={args}>{args}</div></div>}
-      {card.pendingApproval && (
+        <span className={`tool-chevron ${expanded ? "expanded" : ""}`}><IconChevronDown /></span>
+      </button>
+      {expanded && args && <div className="tool-body"><div className="tool-args" title={args}>{args}</div></div>}
+      {expanded && card.pendingApproval && (
         <div className="tool-body">
           <div className="cmd-block">{card.pendingApproval}</div>
+        </div>
+      )}
+      {card.pendingApproval && (
+        <div className="tool-body">
           <div className="approval-row">
             <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true })} title="Approve (A)">
               <IconCheck /> Approve <span className="kbd">A</span>
@@ -1249,7 +1264,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
           </div>
         </div>
       )}
-      {card.output !== undefined && (
+      {expanded && card.output !== undefined && (
         <div className="tool-body">
           <pre className="tool-output">{card.output}</pre>
         </div>

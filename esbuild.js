@@ -14,6 +14,10 @@ if (devExtension) {
     container.title = "KoMind - Dev";
   });
   manifest.contributes.configuration.title = "KoMind - Dev";
+  manifest.icon = "media/komind-logo.png";
+  manifest.contributes.viewsContainers.activitybar.forEach((container) => {
+    container.icon = "media/komind-logo.png";
+  });
   manifest.contributes.commands.forEach((command) => {
     command.title = command.title.replace(/^KoMind:/, "KoMind - Dev:");
   });

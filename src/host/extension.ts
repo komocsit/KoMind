@@ -312,6 +312,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "newSessionRequest": this.startSession(); break;
+      case "requestCurrentSession": {
+        if (!this.currentSessionId) {
+          this.startSession();
+          break;
+        }
+        const events = await this.store.load(this.currentSessionId);
+        this.post({ type: "loadEvents", sessionId: this.currentSessionId, events });
+        break;
+      }
       case "retry": {
         const s = this.sessions.get(m.sessionId);
         if (s && !s.busy) s.send("(retry)");

@@ -43,6 +43,7 @@ export type WebviewToHostMsg =
   | { type: "userMessage"; sessionId: string; text: string; attachments?: FileAttachment[]; images?: ImageAttachment[] }
   | { type: "approve"; callId: string; approved: boolean; always?: boolean }
   | { type: "newSessionRequest" }
+  | { type: "requestCurrentSession" }
   | { type: "retry"; sessionId: string }
   | { type: "requestSessionList" }
   | { type: "loadSession"; sessionId: string }

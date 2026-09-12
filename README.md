@@ -1,5 +1,9 @@
 # KoMind — VS Code Extension
 
+<p align="center">
+  <img src="media/komind-logo.png" alt="KoMind logo" width="180" />
+</p>
+
 A VS Code extension that embeds a coding agent in the activity bar. The agent chats with an Anthropic-compatible API endpoint (default `https://api.justwoker.icu`), and can read files, list directories, apply edits with visual diffs, and run terminal commands behind an approval gate. Sessions are persisted to global storage and can be reloaded from a dropdown.
 
 ## Dev setup
