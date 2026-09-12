@@ -27,7 +27,7 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 
 ## Tool permission model
 
-- **Edits** (`apply_edit`): auto-applied by default (`autoApproveEdits`). The edit opens in a diff tab; Ctrl+Z in the editor undoes it. Non-unique or missing `oldString` matches are rejected with an error.
+- **Edits** (`apply_edit`): auto-applied and saved immediately by default (`autoApproveEdits`), so no save prompt is shown. Review changes with Git/Source Control. Non-unique or missing `oldString` matches are rejected with an error.
 - **Terminal** (`run_terminal`): requires explicit user approval in the chat card (Approve/Reject buttons). Unanswered requests auto-reject after 60 seconds.
 
 ## Architecture
