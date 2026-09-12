@@ -76,6 +76,20 @@ const CSS = `
   .brand .brand-logo { width: 22px; height: 22px; object-fit: contain; flex: none; }
   .header .spacer { flex: 1; }
   .icon-btn { padding: 4px 7px; min-height: 28px; }
+  .attach-menu-wrap { position: relative; flex: none; }
+  .attach-trigger { min-width: 34px; min-height: 34px; justify-content: center; }
+  .attach-menu {
+    position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 70;
+    width: 220px; padding: 5px;
+    background: var(--vscode-editorWidget-background, var(--vscode-inputBackground));
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+    border-radius: 10px; box-shadow: 0 -5px 18px rgba(0,0,0,.4);
+    animation: km-menu-in 130ms ease;
+  }
+  .attach-menu button { width: 100%; border: none; background: transparent; justify-content: flex-start; padding: 7px 9px; }
+  .attach-menu button:hover { background: var(--vscode-list-hoverBackground); }
+  .attach-menu button:disabled { opacity: .45; }
+  .attach-menu .shortcut { margin-left: auto; opacity: .55; }
 
   /* Controls row (bottom, above composer): model/effort menu + repo context toggle */
   .controls {
@@ -434,6 +448,11 @@ const IconGear = () => (
 );
 const IconTrash = () => (<svg {...iconProps} width={12} height={12}><path d="M3 6h18" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" /><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>);
 const IconPaperclip = () => (<svg {...iconProps} width={14} height={14}><path d="M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>);
+const IconMenuFolder = () => (<svg {...iconProps} width={14} height={14}><path d="M3 6a2 2 0 012-2h5l2 3h7a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>);
+const IconSlashBox = () => (<svg {...iconProps} width={14} height={14}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M14 7l-4 10" /></svg>);
+const IconConnector = () => (<svg {...iconProps} width={14} height={14}><rect x="3" y="12" width="7" height="8" rx="1" /><rect x="14" y="4" width="7" height="7" rx="1" /><path d="M6.5 12V8h11v4M10 16h4" /></svg>);
+const IconPlug = () => (<svg {...iconProps} width={14} height={14}><path d="M8 3v5M16 3v5M6 8h12v2a6 6 0 01-6 6v5M5 19l14-14" /></svg>);
+const IconChevronRight = () => (<svg {...iconProps} width={13} height={13}><path d="M9 18l6-6-6-6" /></svg>);
 const IconBranch = () => (<svg {...iconProps} width={14} height={14}><path d="M6 3v12" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 01-9 9" /></svg>);
 const IconSparkMini = () => (
   <svg {...iconProps} width={12} height={12} style={{ color: "var(--km-accent)", flex: "none" }}>
@@ -519,6 +538,7 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [newModel, setNewModel] = useState("");
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [pasteError, setPasteError] = useState("");
@@ -529,6 +549,7 @@ export default function App() {
   const [settings, setSettings] = useState<{ baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean } | null>(null);
   const sessionIdRef = useRef<string>("");
   const imageSequenceRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -590,6 +611,21 @@ export default function App() {
             return next;
           case "attachments":
             setAttachments((prev) => [...prev, ...m.files]);
+            setImages((prev) => {
+              const next = [...prev];
+              let totalBytes = next.reduce((sum, image) => sum + base64Bytes(image.data), 0);
+              for (const image of m.images) {
+                const bytes = base64Bytes(image.data);
+                if (next.length >= MAX_IMAGES_PER_MESSAGE || totalBytes + bytes > MAX_TOTAL_IMAGE_BYTES) break;
+                next.push(image);
+                totalBytes += bytes;
+              }
+              return next;
+            });
+            setPasteError(m.warning ?? "");
+            return next;
+          case "attachmentError":
+            setPasteError(m.message);
             return next;
           case "contextEnabled":
             setContextOn(m.enabled);
@@ -640,9 +676,23 @@ export default function App() {
     nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "u") {
+        e.preventDefault();
+        setAttachMenuOpen(false);
+        send({ type: "attachFiles" });
+      } else if (e.key === "Escape") {
+        setAttachMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const submit = (text?: string) => {
     const value = (text ?? input).trim();
-    if ((!value && images.length === 0) || !sessionIdRef.current) return;
+    if ((!value && attachments.length === 0 && images.length === 0) || !sessionIdRef.current) return;
     send({
       type: "userMessage",
       sessionId: sessionIdRef.current,
@@ -933,15 +983,42 @@ export default function App() {
           </div>
         )}
         <div className="composer-row">
-          <button
-            className="icon-btn"
-            onClick={() => send({ type: "attachFiles" })}
-            title="Attach files to the next message"
-            aria-label="Attach files"
-          >
-            <IconPaperclip />
-          </button>
+          <div className="attach-menu-wrap">
+            {attachMenuOpen && (
+              <>
+                <div style={{ position: "fixed", inset: 0, zIndex: 65 }} onClick={() => setAttachMenuOpen(false)} />
+                <div className="attach-menu" role="menu" aria-label="Add context">
+                  <button role="menuitem" onClick={() => { setAttachMenuOpen(false); send({ type: "attachFiles" }); }}>
+                    <IconPaperclip /> Add files or photos <span className="shortcut">Ctrl U</span>
+                  </button>
+                  <button role="menuitem" onClick={() => { setAttachMenuOpen(false); send({ type: "attachFolder" }); }}>
+                    <IconMenuFolder /> Add folder
+                  </button>
+                  <button role="menuitem" onClick={() => { setInput((value) => value || "/"); setAttachMenuOpen(false); requestAnimationFrame(() => textareaRef.current?.focus()); }}>
+                    <IconSlashBox /> Slash commands
+                  </button>
+                  <button role="menuitem" disabled title="No connectors configured">
+                    <IconConnector /> Connectors <span className="shortcut">Not configured</span> <IconChevronRight />
+                  </button>
+                  <button role="menuitem" disabled title="No plugins configured">
+                    <IconPlug /> Plugins <span className="shortcut"><IconChevronRight /></span>
+                  </button>
+                </div>
+              </>
+            )}
+            <button
+              className="icon-btn attach-trigger"
+              onClick={() => setAttachMenuOpen((open) => !open)}
+              title="Add files, photos, or folder"
+              aria-label="Add attachment"
+              aria-haspopup="menu"
+              aria-expanded={attachMenuOpen}
+            >
+              <IconPlus />
+            </button>
+          </div>
           <textarea
+            ref={textareaRef}
             rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -953,7 +1030,7 @@ export default function App() {
           <button
             className="send-btn"
             onClick={() => submit()}
-            disabled={(!input.trim() && images.length === 0) || !sessionIdRef.current}
+            disabled={(!input.trim() && attachments.length === 0 && images.length === 0) || !sessionIdRef.current}
             title="Send (Enter)"
           >
             <IconSend />

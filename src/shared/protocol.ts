@@ -35,7 +35,8 @@ export type HostToWebviewMsg =
   | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
   | { type: "config"; model: string; models: string[]; effort: Effort; mode: Mode; alwaysAllow: { terminal: boolean; edits: boolean } }
   | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean }
-  | { type: "attachments"; files: FileAttachment[] }
+  | { type: "attachments"; files: FileAttachment[]; images: ImageAttachment[]; warning?: string }
+  | { type: "attachmentError"; message: string }
   | { type: "contextEnabled"; enabled: boolean };
 
 export type WebviewToHostMsg =
@@ -56,6 +57,7 @@ export type WebviewToHostMsg =
   | { type: "setMode"; mode: Mode }
   | { type: "resetPermissions" }
   | { type: "attachFiles" }
+  | { type: "attachFolder" }
   | { type: "setContextEnabled"; enabled: boolean };
 
 export type SessionEvent =

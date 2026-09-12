@@ -287,6 +287,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "attachFiles": await this.pickFiles(); break;
+      case "attachFolder": await this.pickFolder(); break;
       case "setContextEnabled": {
         this.contextEnabled = m.enabled;
         void this.context.workspaceState.update("koMind.contextEnabled", m.enabled);
@@ -410,23 +411,85 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private async pickFiles(): Promise<void> {
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
+      canSelectFiles: true,
       canSelectFolders: false,
-      title: "Attach files to the next message",
+      filters: {
+        "Files and photos": ["txt", "md", "json", "jsonl", "js", "jsx", "ts", "tsx", "css", "scss", "html", "xml", "yaml", "yml", "toml", "py", "java", "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "sh", "sql", "csv", "log", "png", "jpg", "jpeg", "gif", "webp"],
+        "All files": ["*"],
+      },
+      title: "Add files or photos",
+      openLabel: "Add",
     });
-    if (!uris || uris.length === 0) return;
-    const MAX = 100_000; // chars per file
+    if (uris?.length) await this.attachUris(uris);
+  }
+
+  private async pickFolder(): Promise<void> {
+    const selected = await vscode.window.showOpenDialog({
+      canSelectMany: false, canSelectFiles: false, canSelectFolders: true,
+      title: "Add folder", openLabel: "Add Folder",
+    });
+    if (!selected?.[0]) return;
+    const root = selected[0];
+    const uris: vscode.Uri[] = [];
+    const skippedDirs = new Set([".git", "node_modules", "dist", "out", "coverage", ".vscode-test"]);
+    const walk = async (dir: vscode.Uri): Promise<void> => {
+      if (uris.length >= 50) return;
+      let entries: [string, vscode.FileType][];
+      try { entries = await vscode.workspace.fs.readDirectory(dir); } catch { return; }
+      for (const [name, type] of entries) {
+        if (uris.length >= 50) return;
+        const child = vscode.Uri.joinPath(dir, name);
+        if (type === vscode.FileType.Directory && !skippedDirs.has(name)) await walk(child);
+        else if (type === vscode.FileType.File) uris.push(child);
+      }
+    };
+    await walk(root);
+    if (uris.length === 0) {
+      this.post({ type: "attachmentError", message: "The selected folder has no readable files." });
+      return;
+    }
+    await this.attachUris(uris, root);
+  }
+
+  private async attachUris(uris: vscode.Uri[], relativeRoot?: vscode.Uri): Promise<void> {
+    const MAX_TEXT_CHARS = 100_000;
     const files: FileAttachment[] = [];
+    const images: ImageAttachment[] = [];
+    const skipped: string[] = [];
+    let totalImageBytes = 0;
+    const displayName = (uri: vscode.Uri) => relativeRoot
+      ? path.basename(relativeRoot.fsPath) + "/" + path.relative(relativeRoot.fsPath, uri.fsPath).split(path.sep).join("/")
+      : path.basename(uri.fsPath);
+    const imageType = (filePath: string): ImageAttachment["mediaType"] | undefined => {
+      switch (path.extname(filePath).toLowerCase()) {
+        case ".jpg": case ".jpeg": return "image/jpeg";
+        case ".png": return "image/png"; case ".gif": return "image/gif"; case ".webp": return "image/webp";
+        default: return undefined;
+      }
+    };
     for (const uri of uris) {
+      const name = displayName(uri);
       try {
         const bytes = await vscode.workspace.fs.readFile(uri);
+        const mediaType = imageType(uri.fsPath);
+        if (mediaType) {
+          if (images.length >= MAX_IMAGES || bytes.byteLength > MAX_IMAGE_BYTES || totalImageBytes + bytes.byteLength > MAX_TOTAL_IMAGE_BYTES) { skipped.push(name); continue; }
+          images.push({ name, mediaType, data: Buffer.from(bytes).toString("base64") });
+          totalImageBytes += bytes.byteLength;
+          continue;
+        }
         let content = Buffer.from(bytes).toString("utf8");
-        let truncated = false;
-        if (content.length > MAX) { content = content.slice(0, MAX); truncated = true; }
-        if (content.includes("\u0000")) continue; // skip binary files
-        files.push({ name: path.basename(uri.fsPath), content, truncated });
-      } catch { /* skip unreadable files */ }
+        if (content.includes("\u0000")) { skipped.push(name); continue; }
+        const truncated = content.length > MAX_TEXT_CHARS;
+        if (truncated) content = content.slice(0, MAX_TEXT_CHARS);
+        files.push({ name, content, truncated });
+      } catch { skipped.push(name); }
     }
-    if (files.length > 0) this.post({ type: "attachments", files });
+    if (files.length > 0 || images.length > 0) {
+      this.post({ type: "attachments", files, images, warning: skipped.length ? skipped.length + " unsupported, unreadable, or oversized file(s) were skipped." : undefined });
+    } else {
+      this.post({ type: "attachmentError", message: "No supported files were added. Images must be PNG, JPEG, GIF, or WebP and under 5 MB." });
+    }
   }
 
   private execGit(root: string, args: string[]): Promise<string> {

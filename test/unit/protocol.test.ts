@@ -14,8 +14,9 @@ describe("protocol types", () => {
       { type: "newSession" },
       { type: "config", model: "gpt-5.6-sol", models: ["gpt-5.6-sol"], effort: "medium", mode: "build", alwaysAllow: { terminal: false, edits: false } },
       { type: "settings", baseUrl: "https://x", maxTokens: 4096, autoApproveEdits: true, autoApproveTerminal: false, models: ["m1"], apiKeySet: true },
-      { type: "attachments", files: [{ name: "a.txt", content: "x" }] },
-      { type: "attachments", files: [{ name: "b.txt", content: "y", truncated: true }] },
+      { type: "attachments", files: [{ name: "a.txt", content: "x" }], images: [] },
+      { type: "attachments", files: [{ name: "b.txt", content: "y", truncated: true }], images: [{ name: "photo.png", mediaType: "image/png", data: "aW1hZ2U=" }], warning: "one skipped" },
+      { type: "attachmentError", message: "unsupported" },
       { type: "contextEnabled", enabled: true },
     ];
     const webview: WebviewToHostMsg[] = [
