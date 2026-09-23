@@ -1,7 +1,14 @@
-export type ToolName = "read_file" | "list_dir" | "apply_edit" | "run_terminal";
+export type ToolName = "read_file" | "list_dir" | "apply_edit" | "run_terminal" | "run_subagents";
 
-export type Effort = "low" | "medium" | "high";
+export type Effort = "low" | "medium" | "high" | "extra" | "max";
 export type Mode = "plan" | "build";
+export type SubagentStatus = "running" | "done" | "failed";
+
+/** Live status of a single sub-agent spawned by a `run_subagents` call. */
+export interface SubagentStatusView {
+  name: string;
+  status: SubagentStatus;
+}
 
 export interface ToolCallView {
   callId: string;
@@ -24,8 +31,10 @@ export interface ImageAttachment {
 
 export type HostToWebviewMsg =
   | { type: "textDelta"; sessionId: string; text: string }
+  | { type: "thinkingDelta"; sessionId: string; text: string }
   | { type: "toolCall"; sessionId: string; callId: string; tool: ToolName; input: Record<string, unknown> }
   | { type: "toolResult"; sessionId: string; callId: string; ok: boolean; output: string }
+  | { type: "subagentStatus"; sessionId: string; callId: string; agents: SubagentStatusView[] }
   | { type: "approvalRequest"; sessionId: string; callId: string; command: string; tool: ToolName }
   | { type: "approvalResolved"; sessionId: string; callId: string; approved: boolean }
   | { type: "error"; sessionId: string; message: string }
@@ -38,6 +47,7 @@ export type HostToWebviewMsg =
   | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean }
   | { type: "attachments"; files: FileAttachment[]; images: ImageAttachment[]; warning?: string }
   | { type: "attachmentError"; message: string }
+  | { type: "importResult"; ok: boolean; message: string; count?: number }
   | { type: "contextEnabled"; enabled: boolean };
 
 export type WebviewToHostMsg =
@@ -63,7 +73,8 @@ export type WebviewToHostMsg =
   | { type: "resetPermissions" }
   | { type: "attachFiles" }
   | { type: "attachFolder" }
-  | { type: "setContextEnabled"; enabled: boolean };
+  | { type: "setContextEnabled"; enabled: boolean }
+  | { type: "importSession" };
 
 export type SessionEvent =
   | { kind: "user"; text: string; ts: number; images?: ImageAttachment[] }

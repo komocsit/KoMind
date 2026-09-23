@@ -4,17 +4,19 @@ import * as cp from "child_process";
 import { createProvider, type Provider } from "./provider";
 import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
+import { runSubagents } from "./subagent";
+import { parseImport, type ImportedConversation } from "./sessionImport";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
 import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment } from "../shared/protocol";
 
-const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
+const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal", "run_subagents"];
 
 function toToolName(name: string): ToolName {
   return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : "read_file";
 }
 
-const EFFORTS: Effort[] = ["low", "medium", "high"];
+const EFFORTS: Effort[] = ["low", "medium", "high", "extra", "max"];
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -37,6 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider("koMind.chat", provider),
     vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
     vscode.commands.registerCommand("koMind.resetPermissions", () => provider.resetPermissions()),
+    vscode.commands.registerCommand("koMind.importSession", () => provider.importSession()),
   );
 }
 
@@ -157,8 +160,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private extraModels(): string[] {
     const fromSettings = vscode.workspace.getConfiguration("koMind").get<string[]>("models", []);
-    const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
-    return [...fromSettings, ...saved];
+    // user-added models live in globalState so they persist across windows/workspaces
+    // and survive the API model-list refresh; `workspaceState` is read only to migrate
+    // models added by older versions.
+    const saved = this.context.globalState.get<string[]>("koMind.extraModels") ?? [];
+    const legacy = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+    return [...new Set([...fromSettings, ...saved, ...legacy].filter(Boolean))];
   }
 
   private postConfig() {
@@ -201,17 +208,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     const ui = {
       textDelta: (t: string) => this.post({ type: "textDelta", sessionId: id, text: t }),
+      thinkingDelta: (t: string) => this.post({ type: "thinkingDelta", sessionId: id, text: t }),
       toolCall: (callId: string, tool: string, input: Record<string, unknown>) =>
         this.post({ type: "toolCall", sessionId: id, callId, tool: toToolName(tool), input }),
       toolResult: (callId: string, ok: boolean, output: string) => this.post({ type: "toolResult", sessionId: id, callId, ok, output }),
+      subagentStatus: (callId: string, agents: { name: string; status: "running" | "done" | "failed" }[]) => this.post({ type: "subagentStatus", sessionId: id, callId, agents }),
       error: (message: string) => this.post({ type: "error", sessionId: id, message }),
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
       turnStopped: () => this.post({ type: "turnStopped", sessionId: id }),
     };
-    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(), store: this.store, ui, initialMessages });
+    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(provider), store: this.store, ui, initialMessages });
   }
 
-  private makeToolContext(): ToolContext {
+  private makeToolContext(provider?: Provider): ToolContext {
     const cfg = vscode.workspace.getConfiguration("koMind");
     const root = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     return {
@@ -271,6 +280,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         if (tool === "apply_edit" && this.alwaysAllow.edits) return Promise.resolve(true);
         return this.approvals.request(this.currentSessionId ?? "", callId, command, tool ?? "run_terminal", signal);
       },
+      // Sub-agents inherit the current mode's tool restrictions and share the
+      // parent's tool context (approvals, workspace access). They run headless
+      // and concurrently. Only available when a provider is supplied — sub-agents
+      // never receive a runSubagents context, so nesting is impossible.
+      runSubagents: provider
+        ? (tasks, signal, onStatus) => {
+          const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir"] : null;
+          return runSubagents(tasks, { provider, ctx: this.makeToolContext(), allowedTools: allowed, onStatus }, signal);
+        }
+        : undefined,
       workspaceRoot: root,
       autoApproveEdits: cfg.get("autoApproveEdits", true),
       autoApproveTerminal: cfg.get("autoApproveTerminal", false),
@@ -305,6 +324,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "attachFiles": await this.pickFiles(); break;
+      case "importSession": await this.importSession(); break;
       case "stop": {
         const session = this.sessions.get(m.sessionId);
         if (!session?.stop()) this.post({ type: "turnStopped", sessionId: m.sessionId });
@@ -388,8 +408,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       case "addModel": {
         const name = m.model.trim();
         if (!name) break;
-        const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
-        if (!saved.includes(name)) void this.context.workspaceState.update("koMind.extraModels", [...saved, name]);
+        const saved = this.context.globalState.get<string[]>("koMind.extraModels") ?? [];
+        if (!saved.includes(name)) void this.context.globalState.update("koMind.extraModels", [...saved, name]);
         this.currentModel = name;
         this.baseProvider.setModel(name);
         void this.context.workspaceState.update("koMind.model", name);
@@ -405,9 +425,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "removeModel": {
-        const saved = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+        const saved = this.context.globalState.get<string[]>("koMind.extraModels") ?? [];
         const next = saved.filter((x) => x !== m.model);
-        void this.context.workspaceState.update("koMind.extraModels", next);
+        void this.context.globalState.update("koMind.extraModels", next);
+        // also drop it from any legacy workspace-scoped list
+        const legacy = this.context.workspaceState.get<string[]>("koMind.extraModels") ?? [];
+        if (legacy.includes(m.model)) void this.context.workspaceState.update("koMind.extraModels", legacy.filter((x) => x !== m.model));
         this.models = this.mergeModels([]);
         this.postConfig();
         this.postSettings();
@@ -454,6 +477,89 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendSessionList() {
     this.post({ type: "sessionList", sessions: await this.store.list() });
+  }
+
+  /**
+   * Import a chat/coding session exported from another AI provider. Reads a
+   * JSON export or plain-text transcript, normalizes it into KoMind session
+   * events, persists it as a new session, and opens it so the conversation can
+   * continue mid-thread with any configured model.
+   */
+  async importSession(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      filters: { "Chat exports": ["json", "txt", "md"], "All files": ["*"] },
+      title: "Import chat from another AI provider",
+      openLabel: "Import",
+    });
+    if (!uris?.[0]) return;
+
+    let raw: string;
+    try {
+      const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+      const stat = await vscode.workspace.fs.stat(uris[0]);
+      if (stat.size > MAX_IMPORT_BYTES) {
+        this.post({ type: "importResult", ok: false, message: "That export is too large (over 25 MB)." });
+        return;
+      }
+      raw = Buffer.from(await vscode.workspace.fs.readFile(uris[0])).toString("utf8");
+    } catch (e) {
+      this.post({ type: "importResult", ok: false, message: `Could not read the file: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+
+    let conversations: ImportedConversation[];
+    try {
+      conversations = parseImport(raw);
+    } catch {
+      conversations = [];
+    }
+    if (conversations.length === 0) {
+      this.post({ type: "importResult", ok: false, message: "No conversation was found in that file. Supported: ChatGPT, Claude, Gemini, OpenAI/Anthropic API JSON, or a plain-text transcript." });
+      return;
+    }
+
+    // A single export file can hold many conversations (e.g. a full ChatGPT
+    // export). Let the user pick which to import when there is more than one.
+    let chosen = conversations;
+    if (conversations.length > 1) {
+      const picks = await vscode.window.showQuickPick(
+        conversations.map((c, i) => ({
+          label: c.title || `Conversation ${i + 1}`,
+          description: `${c.provider} · ${c.events.length} messages`,
+          index: i,
+          picked: conversations.length <= 20,
+        })),
+        { canPickMany: true, title: `Select conversations to import (${conversations.length} found)` }
+      );
+      if (!picks || picks.length === 0) return;
+      chosen = picks.map((p) => conversations[p.index]);
+    }
+
+    let lastId: string | undefined;
+    for (const conv of chosen) {
+      const { id } = await this.store.importSession(conv.events);
+      this.sessions.set(id, this.makeSession(id, messagesFromEvents(conv.events)));
+      lastId = id;
+    }
+
+    await this.sendSessionList();
+    if (lastId) {
+      this.currentSessionId = lastId;
+      const events = await this.store.load(lastId);
+      this.post({ type: "loadEvents", sessionId: lastId, events });
+    }
+    const providers = [...new Set(chosen.map((c) => c.provider))].join(", ");
+    this.post({
+      type: "importResult",
+      ok: true,
+      count: chosen.length,
+      message: chosen.length === 1
+        ? `Imported a ${providers} conversation. You can continue it now.`
+        : `Imported ${chosen.length} conversations from ${providers}.`,
+    });
   }
 
   private async pickFiles(): Promise<void> {

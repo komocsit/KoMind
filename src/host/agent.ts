@@ -5,8 +5,10 @@ import type { SessionEvent, ToolName, ImageAttachment } from "../shared/protocol
 
 export interface AgentUi {
   textDelta(t: string): void;
+  thinkingDelta?(t: string): void;
   toolCall(callId: string, tool: string, input: Record<string, unknown>): void;
   toolResult(callId: string, ok: boolean, output: string): void;
+  subagentStatus?(callId: string, agents: { name: string; status: "running" | "done" | "failed" }[]): void;
   error(msg: string): void;
   turnComplete(): void;
   turnStopped?(): void;
@@ -84,6 +86,9 @@ export class AgentSession {
             partialText += e.text;
             this.opts.ui.textDelta(e.text);
           }
+          else if (e.type === "thinkingDelta") {
+            this.opts.ui.thinkingDelta?.(e.text);
+          }
           else if (e.type === "toolUse") {
             this.opts.ui.toolCall(e.id, e.name, e.input);
           }
@@ -106,7 +111,7 @@ export class AgentSession {
           activeTool = { id: tu.id, name: tu.name };
           if (signal.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
           await this.opts.store.append(this.opts.sessionId, { kind: "toolCall", callId: tu.id, tool: tu.name, input: tu.input, ts: Date.now() });
-          const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx, signal);
+          const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx, signal, (agents) => this.opts.ui.subagentStatus?.(tu.id, agents));
           activeTool = undefined;
           this.opts.ui.toolResult(tu.id, r.ok, r.output);
           await this.opts.store.append(this.opts.sessionId, { kind: "toolResult", callId: tu.id, ok: r.ok, output: r.output, ts: Date.now() });

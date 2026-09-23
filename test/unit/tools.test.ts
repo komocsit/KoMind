@@ -87,7 +87,51 @@ describe("executeTool", () => {
     expect(ctx.runTerminal).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
   });
-  it("exposes 4 tool defs for the API", () => {
-    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "run_terminal"]);
+  it("exposes the tool defs for the API", () => {
+    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "run_terminal", "run_subagents"]);
+  });
+
+  it("run_subagents reports when sub-agents are unavailable", async () => {
+    const r = await executeTool("run_subagents", { tasks: [{ name: "a", prompt: "do x" }] }, "c1", mockCtx());
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("not available");
+  });
+
+  it("run_subagents rejects an empty task list", async () => {
+    const runSubagents = vi.fn(async () => []);
+    const r = await executeTool("run_subagents", { tasks: [] }, "c1", mockCtx({ runSubagents }));
+    expect(runSubagents).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+  });
+
+  it("run_subagents runs tasks and aggregates their results", async () => {
+    const runSubagents = vi.fn(async (tasks: { name: string; prompt: string }[]) =>
+      tasks.map((t) => ({ name: t.name, ok: true, output: `result for ${t.name}` })));
+    const ctx = mockCtx({ runSubagents });
+    const r = await executeTool("run_subagents", { tasks: [{ name: "alpha", prompt: "p1" }, { name: "beta", prompt: "p2" }] }, "c1", ctx);
+    expect(runSubagents).toHaveBeenCalledTimes(1);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("Sub-agent: alpha");
+    expect(r.output).toContain("result for alpha");
+    expect(r.output).toContain("Sub-agent: beta");
+  });
+
+  it("run_subagents reports failure when any sub-agent fails", async () => {
+    const runSubagents = vi.fn(async () => [
+      { name: "alpha", ok: true, output: "ok" },
+      { name: "beta", ok: false, output: "boom" },
+    ]);
+    const r = await executeTool("run_subagents", { tasks: [{ name: "alpha", prompt: "p1" }, { name: "beta", prompt: "p2" }] }, "c1", mockCtx({ runSubagents }));
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("(failed)");
+  });
+
+  it("run_subagents caps the number of concurrent sub-agents", async () => {
+    const runSubagents = vi.fn(async () => []);
+    const tasks = Array.from({ length: 7 }, (_, i) => ({ name: `a${i}`, prompt: "p" }));
+    const r = await executeTool("run_subagents", { tasks }, "c1", mockCtx({ runSubagents }));
+    expect(runSubagents).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("at most");
   });
 });

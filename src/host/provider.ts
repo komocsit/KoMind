@@ -3,7 +3,7 @@ import type { ToolDef } from "./tools";
 import type { Effort } from "../shared/protocol";
 
 export interface ProviderConfig { baseUrl: string; apiKey: string; model: string; maxTokens: number; effort?: Effort; }
-export type StreamEvent = { type: "textDelta"; text: string } | { type: "toolUse"; id: string; name: string; input: Record<string, unknown> } | { type: "endTurn" };
+export type StreamEvent = { type: "textDelta"; text: string } | { type: "thinkingDelta"; text: string } | { type: "toolUse"; id: string; name: string; input: Record<string, unknown> } | { type: "endTurn" };
 export type AnthropicMessage = { role: "user" | "assistant"; content: unknown[] };
 export interface AnthropicClientLike {
   messages: { stream(params: unknown, options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
@@ -79,6 +79,10 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
         } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
           text += ev.delta.text;
           onEvent({ type: "textDelta", text: ev.delta.text });
+        } else if (ev.type === "content_block_delta" && (ev.delta?.type === "thinking_delta" || ev.delta?.type === "reasoning_delta")) {
+          // Extended-thinking streams emit the model's reasoning as it forms.
+          const chunk = ev.delta.thinking ?? ev.delta.text ?? "";
+          if (chunk) onEvent({ type: "thinkingDelta", text: chunk });
         } else if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && currentTool) {
           currentTool.json += ev.delta.partial_json;
         } else if (ev.type === "content_block_stop" && currentTool) {

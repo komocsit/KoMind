@@ -40,6 +40,10 @@
       {
         "command": "koMind.resetPermissions",
         "title": "KoMind: Reset Always-Allow Permissions"
+      },
+      {
+        "command": "koMind.importSession",
+        "title": "KoMind: Import Chat from Another AI Provider"
       }
     ],
     "configuration": {
@@ -70,7 +74,9 @@
           "enum": [
             "low",
             "medium",
-            "high"
+            "high",
+            "extra",
+            "max"
           ],
           "default": "high",
           "description": "Default reasoning effort sent to the API"

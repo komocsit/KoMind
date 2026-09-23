@@ -14,6 +14,13 @@ export class SessionStore {
     fs.writeFileSync(p, "");
     return { id, path: p };
   }
+  /** Create a session pre-filled with events imported from another provider. */
+  async importSession(events: SessionEvent[]): Promise<{ id: string; path: string }> {
+    const { id, path: p } = this.createSession();
+    const body = events.map((e) => JSON.stringify(e)).join("\n");
+    if (body) await fs.promises.writeFile(p, body + "\n", "utf8");
+    return { id, path: p };
+  }
   async append(sessionId: string, event: SessionEvent): Promise<void> {
     await fs.promises.appendFile(this.file(sessionId), JSON.stringify(event) + "\n", "utf8");
   }

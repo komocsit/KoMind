@@ -2,13 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 const DISPLAY_NAME = __KOMIND_DISPLAY_NAME__;
 
 interface Card {
-  kind: "user" | "assistant" | "tool" | "error";
+  kind: "user" | "assistant" | "tool" | "error" | "thinking" | "summary";
   text?: string;
   callId?: string;
   tool?: string;
@@ -18,12 +18,26 @@ interface Card {
   images?: ImageAttachment[];
   pendingApproval?: string;
   approvalDone?: "approved" | "rejected";
+  /** thinking cards: elapsed wall-clock seconds spent reasoning */
+  thinkingSeconds?: number;
+  /** thinking cards: whether the model is still streaming its reasoning */
+  thinkingActive?: boolean;
+  /** wall-clock time (ms since epoch) at which this step happened */
+  ts?: number;
+  /** summary cards: total time taken for the turn, in milliseconds */
+  durationMs?: number;
+  /** tool cards for run_subagents: live status of each spawned sub-agent */
+  subagents?: SubagentStatusView[];
 }
 
 const CSS = `
   :root {
     --km-radius: 8px;
     --km-radius-sm: 6px;
+    /* Single professional brand accent used for interactive + decorative color. */
+    --km-primary: var(--vscode-charts-blue, #3b82f6);
+    --km-primary-soft: color-mix(in srgb, var(--km-primary) 14%, transparent);
+    /* Semantic colors kept for status only (success / warning / error). */
     --km-accent: var(--vscode-charts-green, #22c55e);
     --km-warn: var(--vscode-charts-yellow, #eab308);
     --km-transition: 150ms ease;
@@ -54,11 +68,11 @@ const CSS = `
   }
   button:disabled { opacity: 0.5; cursor: default; }
   button.primary {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
+    background: var(--km-primary);
+    color: #fff;
     border-color: transparent;
   }
-  button.primary:hover { background: var(--vscode-button-hoverBackground); }
+  button.primary:hover { background: color-mix(in srgb, var(--km-primary) 85%, #000); }
   button.approve { color: var(--km-accent); border-color: var(--km-accent); }
   button.approve:hover { background: color-mix(in srgb, var(--km-accent) 15%, transparent); }
   button.reject { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
@@ -129,7 +143,7 @@ const CSS = `
     background: transparent; justify-content: flex-start;
   }
   .menu-item:hover { background: var(--vscode-list-hoverBackground); }
-  .menu-item .check { visibility: hidden; color: var(--km-accent); flex: none; }
+  .menu-item .check { visibility: hidden; color: var(--km-primary); flex: none; }
   .menu-item.selected .check { visibility: visible; }
   .menu-item .check:empty { display: none; }
   .menu-sep { border-top: 1px solid var(--vscode-panel-border); margin: 4px 2px; }
@@ -183,7 +197,7 @@ const CSS = `
   .apikey-status.ok { color: var(--km-accent); }
   .apikey-status.none { color: var(--vscode-errorForeground); }
   .check-row { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
-  .check-row input { margin-top: 2px; accent-color: var(--vscode-button-background); }
+  .check-row input { margin-top: 2px; accent-color: var(--km-primary); }
   .check-row small { display: block; opacity: 0.6; font-size: 11px; font-weight: 400; }
   .model-list { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
   .muted { opacity: 0.6; font-size: 11.5px; }
@@ -191,22 +205,78 @@ const CSS = `
     display: flex; justify-content: flex-end; gap: 8px;
     padding: 10px 12px; border-top: 1px solid var(--vscode-panel-border);
   }
-  .settings-foot .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
-  .settings-foot .primary:hover { background: var(--vscode-button-hoverBackground); }
+  .settings-foot .primary { background: var(--km-primary); color: #fff; border-color: transparent; }
+  .settings-foot .primary:hover { background: color-mix(in srgb, var(--km-primary) 85%, #000); }
   .effort-row { display: flex; gap: 4px; padding: 2px 6px 6px; }
   .effort-row button {
     flex: 1; min-height: 26px; justify-content: center; font-size: 11.5px; font-weight: 600;
   }
   .effort-row button.active {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
+    background: var(--km-primary);
+    color: #fff;
     border-color: transparent; opacity: 1;
+  }
+
+  /* Effort slider (Faster ↔ Smarter) */
+  .effort-slider { padding: 4px 10px 10px; }
+  .effort-slider-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .effort-slider-head .es-label { font-size: 12px; opacity: 0.6; }
+  .effort-slider-head .es-value {
+    font-size: 13px; font-weight: 800;
+    color: var(--km-primary);
+  }
+  .effort-slider-head .es-help {
+    margin-left: auto; display: inline-flex; opacity: 0.5;
+  }
+  .effort-slider-ends {
+    display: flex; justify-content: space-between;
+    font-size: 11.5px; font-weight: 600; margin-bottom: 6px;
+  }
+  .effort-slider-ends span:first-child { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+  .effort-slider-ends span:last-child { color: var(--km-primary); }
+  .effort-track {
+    position: relative; height: 26px; display: flex; align-items: center;
+  }
+  .effort-track input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 22px; margin: 0; background: transparent; cursor: pointer;
+  }
+  .effort-track .es-rail {
+    position: absolute; left: 0; right: 0; height: 22px; border-radius: 11px;
+    background: var(--vscode-input-background, rgba(255,255,255,0.08));
+    border: 1px solid var(--vscode-panel-border);
+    pointer-events: none;
+  }
+  .effort-track .es-fill {
+    position: absolute; left: 0; height: 22px; border-radius: 11px;
+    background: var(--km-primary);
+    pointer-events: none; transition: width var(--km-transition);
+  }
+  .effort-track .es-dots {
+    position: absolute; left: 0; right: 0; display: flex;
+    justify-content: space-between; padding: 0 13px; pointer-events: none;
+  }
+  .effort-track .es-dots span { width: 4px; height: 4px; border-radius: 50%; background: #fff; opacity: 0.55; }
+  .effort-track input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #fff;
+    border: 3px solid var(--km-primary);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: pointer;
+  }
+  .effort-track input[type="range"]::-moz-range-thumb {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #fff;
+    border: 3px solid var(--km-primary);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: pointer;
   }
   .ctx-btn { flex: none; min-height: 28px; }
   .ctx-btn.active {
-    background: color-mix(in srgb, var(--km-accent) 18%, transparent);
-    border-color: var(--km-accent);
-    color: var(--km-accent);
+    background: color-mix(in srgb, var(--km-primary) 18%, transparent);
+    border-color: var(--km-primary);
+    color: var(--km-primary);
   }
 
   /* Attachment chips */
@@ -276,8 +346,8 @@ const CSS = `
   .user-row { display: flex; justify-content: flex-end; margin: 10px 0; }
   .user-bubble {
     max-width: 85%;
-    background: color-mix(in srgb, var(--vscode-focusBorder) 22%, var(--vscode-inputBackground));
-    border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+    background: color-mix(in srgb, var(--km-primary) 16%, var(--vscode-inputBackground));
+    border: 1px solid color-mix(in srgb, var(--km-primary) 32%, transparent);
     border-radius: var(--km-radius) var(--km-radius) 3px var(--km-radius);
     padding: 7px 11px;
     white-space: pre-wrap;
@@ -326,19 +396,50 @@ const CSS = `
     font-size: 11px;
     font-weight: 700;
     opacity: 1;
-    transition: color 180ms ease;
+    color: var(--km-primary);
   }
-  .komind-loading .progress-color-0 { color: var(--vscode-charts-blue, #4daafc); }
-  .komind-loading .progress-color-1 { color: var(--vscode-charts-green, #89d185); }
-  .komind-loading .progress-color-2 { color: var(--vscode-charts-purple, #b180d7); }
-  .komind-loading .progress-color-3 { color: var(--vscode-charts-orange, #d18616); }
-  .komind-loading .progress-color-4 { color: var(--vscode-charts-yellow, #cca700); }
-  .komind-loading .progress-color-5 { color: var(--vscode-charts-red, #f48771); }
-  .komind-loading .progress-color-6 { color: var(--vscode-textLink-foreground, #3794ff); }
+  .komind-loading .progress-color-0,
+  .komind-loading .progress-color-1,
+  .komind-loading .progress-color-2,
+  .komind-loading .progress-color-3,
+  .komind-loading .progress-color-4,
+  .komind-loading .progress-color-5,
+  .komind-loading .progress-color-6 { color: var(--km-primary); }
   .komind-status-logo { width: 16px; height: 16px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
   @keyframes km-brand-pulse {
     0%, 100% { transform: scale(0.9); opacity: 0.5; }
     50% { transform: scale(1); opacity: 1; }
+  }
+
+  /* Thinking card — shows the model's live reasoning */
+  .thinking-card {
+    border: 1px solid var(--vscode-panel-border);
+    border-left: 2px solid color-mix(in srgb, var(--km-primary) 60%, var(--vscode-panel-border));
+    border-radius: var(--km-radius);
+    margin: 8px 0; overflow: hidden;
+    background: color-mix(in srgb, var(--vscode-inputBackground) 40%, transparent);
+  }
+  .thinking-head {
+    display: flex; width: 100%; align-items: center; gap: 8px;
+    min-height: 32px; padding: 6px 10px;
+    color: var(--vscode-foreground); background: transparent;
+    border: none; border-radius: 0;
+    font-size: 12px; text-align: left;
+  }
+  .thinking-head:hover { background: var(--vscode-list-hoverBackground); }
+  .thinking-title { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .thinking-title img { width: 15px; height: 15px; object-fit: contain; }
+  .thinking-title img.spin-pulse { animation: km-brand-pulse 1.2s ease-in-out infinite; }
+  .thinking-meta { margin-left: auto; font-size: 11px; opacity: 0.7; }
+  .thinking-chevron { display: inline-flex; flex: none; opacity: 0.65; transition: transform var(--km-transition); }
+  .thinking-chevron.expanded { transform: rotate(180deg); }
+  .thinking-body {
+    padding: 4px 12px 10px;
+    font-size: 12px; line-height: 1.55; font-style: italic;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    opacity: 0.9;
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 320px; overflow-y: auto;
   }
 
   /* Tool card */
@@ -381,6 +482,38 @@ const CSS = `
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* Sub-agent roster — one row per parallel agent with its pet icon + status */
+  .subagents { padding: 2px 10px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .subagent-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; min-height: 30px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm);
+    background: color-mix(in srgb, var(--vscode-inputBackground) 45%, transparent);
+    font-size: 12px;
+  }
+  .subagent-row.running { border-color: color-mix(in srgb, var(--vscode-focusBorder) 45%, var(--vscode-panel-border)); }
+  .subagent-row.done { border-color: color-mix(in srgb, var(--km-accent) 40%, var(--vscode-panel-border)); }
+  .subagent-row.failed { border-color: color-mix(in srgb, var(--vscode-errorForeground) 45%, var(--vscode-panel-border)); }
+  .subagent-pet {
+    display: inline-flex; flex: none;
+    width: 26px; height: 26px; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--km-primary) 14%, transparent);
+    color: var(--km-primary);
+  }
+  .subagent-row.done .subagent-pet { background: color-mix(in srgb, var(--km-accent) 16%, transparent); color: var(--km-accent); }
+  .subagent-row.failed .subagent-pet { background: color-mix(in srgb, var(--vscode-errorForeground) 14%, transparent); color: var(--vscode-errorForeground); }
+  .subagent-pet.working svg { animation: km-pet-bounce 1s ease-in-out infinite; }
+  @keyframes km-pet-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+  .subagent-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subagent-kind { font-size: 10.5px; opacity: 0.55; }
+  .subagent-state { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+  .subagent-state svg { flex: none; }
+  .subagent-state.running { color: var(--vscode-foreground); opacity: 0.85; }
+  .subagent-state.done { color: var(--km-accent); }
+  .subagent-state.failed { color: var(--vscode-errorForeground); }
   .tool-args { font-size: 11px; opacity: 0.65; margin-top: -2px; margin-bottom: 4px;
     font-family: var(--vscode-editor-font-family, monospace);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -408,7 +541,7 @@ const CSS = `
     font-size: 11px; font-weight: 600; background: transparent; opacity: 0.65;
   }
   .mode-toggle button + button { border-left: 1px solid var(--vscode-panel-border); }
-  .mode-toggle button.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); opacity: 1; }
+  .mode-toggle button.active { background: var(--km-primary); color: #fff; opacity: 1; }
   .mode-toggle button.active.plan { background: var(--km-warn); color: var(--vscode-sideBar-background, #1e1e1e); }
   .tool-output {
     margin: 6px 0 0;
@@ -423,8 +556,7 @@ const CSS = `
   }
 
   /* Error card */
-  .error-card {
-    display: flex; align-items: flex-start; gap: 8px;
+  .error-card {    display: flex; align-items: flex-start; gap: 8px;
     border: 1px solid var(--vscode-errorForeground);
     border-radius: var(--km-radius);
     background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
@@ -433,6 +565,32 @@ const CSS = `
     font-size: 12px;
   }
   .error-card .msg { flex: 1; word-break: break-word; }
+
+  /* Step timestamp — small, subtle label shown on each step */
+  .step-ts {
+    display: block;
+    font-size: 10px;
+    opacity: 0.5;
+    margin: 0 0 2px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    letter-spacing: 0.3px;
+  }
+  .user-row .step-ts { text-align: right; }
+
+  /* Turn summary card — total time taken for the completed turn */
+  .summary-card {
+    display: flex; align-items: center; gap: 8px;
+    margin: 12px 0 6px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    border: 1px dashed var(--vscode-panel-border);
+    border-radius: var(--km-radius);
+    background: color-mix(in srgb, var(--vscode-inputBackground) 35%, transparent);
+  }
+  .summary-card svg { flex: none; opacity: 0.8; }
+  .summary-card .total { font-weight: 700; color: var(--km-primary); }
+  .summary-card .at { margin-left: auto; opacity: 0.7; font-family: var(--vscode-editor-font-family, monospace); }
 
   /* Composer */
   .composer { flex: none; padding: 8px 10px 10px; border-top: 1px solid var(--vscode-panel-border); }
@@ -451,11 +609,11 @@ const CSS = `
   .composer textarea::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.8; }
   .composer .send-btn {
     min-height: 34px; min-width: 38px; justify-content: center;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
+    background: var(--km-primary);
+    color: #fff;
     border-color: transparent; border-radius: var(--km-radius);
   }
-  .composer .send-btn:hover { background: var(--vscode-button-hoverBackground); }
+  .composer .send-btn:hover { background: color-mix(in srgb, var(--km-primary) 85%, #000); }
   .composer .send-btn.stop {
     background: var(--vscode-errorForeground);
     color: var(--vscode-editor-background, #fff);
@@ -489,13 +647,14 @@ const IconArchive = () => (<svg {...iconProps} width={13} height={13}><path d="M
 const IconUnarchive = () => (<svg {...iconProps} width={13} height={13}><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M12 17v-5M9 15l3-3 3 3" /></svg>);
 const IconPaperclip = () => (<svg {...iconProps} width={14} height={14}><path d="M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>);
 const IconMenuFolder = () => (<svg {...iconProps} width={14} height={14}><path d="M3 6a2 2 0 012-2h5l2 3h7a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>);
+const IconImport = () => (<svg {...iconProps} width={14} height={14}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></svg>);
 const IconSlashBox = () => (<svg {...iconProps} width={14} height={14}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M14 7l-4 10" /></svg>);
 const IconConnector = () => (<svg {...iconProps} width={14} height={14}><rect x="3" y="12" width="7" height="8" rx="1" /><rect x="14" y="4" width="7" height="7" rx="1" /><path d="M6.5 12V8h11v4M10 16h4" /></svg>);
 const IconPlug = () => (<svg {...iconProps} width={14} height={14}><path d="M8 3v5M16 3v5M6 8h12v2a6 6 0 01-6 6v5M5 19l14-14" /></svg>);
 const IconChevronRight = () => (<svg {...iconProps} width={13} height={13}><path d="M9 18l6-6-6-6" /></svg>);
 const IconBranch = () => (<svg {...iconProps} width={14} height={14}><path d="M6 3v12" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 01-9 9" /></svg>);
 const IconSparkMini = () => (
-  <svg {...iconProps} width={12} height={12} style={{ color: "var(--km-accent)", flex: "none" }}>
+  <svg {...iconProps} width={12} height={12} style={{ color: "var(--km-primary)", flex: "none" }}>
     <path d="M12 3l1.9 5.7L19.6 10.6l-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9L12 3z" />
   </svg>
 );
@@ -510,6 +669,48 @@ const IconFolder = () => (<svg {...iconProps} width={13} height={13}><path d="M2
 const IconPencil = () => (<svg {...iconProps} width={13} height={13}><path d="M17 3a2.8 2.8 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>);
 const IconTerminal = () => (<svg {...iconProps} width={13} height={13}><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>);
 const IconRotate = () => (<svg {...iconProps} width={13} height={13}><path d="M1 4v6h6" /><path d="M3.5 15a9 9 0 102.1-9.4L1 10" /></svg>);
+const IconHelp = () => (<svg {...iconProps} width={14} height={14}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>);
+
+/* ---------- Pet icons for sub-agents ----------
+   Each spawned sub-agent gets its own animal so it is easy to tell them apart
+   at a glance. Icons are simple inline SVGs that inherit currentColor. */
+const petProps = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+
+const PetCat = () => (<svg {...petProps}><path d="M4 5l2.5 3.5M20 5l-2.5 3.5" /><path d="M4 5v6a8 8 0 0016 0V5" /><path d="M9 13h.01M15 13h.01" /><path d="M12 15v1.5M10.5 16.5h3" /><path d="M8 18l-2 1M16 18l2 1" /></svg>);
+const PetDog = () => (<svg {...petProps}><path d="M5 7c0-2 1-3 2-3s2 1 2 3M15 7c0-2 1-3 2-3s2 1 2 3" /><path d="M6 7c-1 1-2 3-2 6a8 8 0 0016 0c0-3-1-5-2-6" /><path d="M9 13h.01M15 13h.01" /><path d="M12 15c-1 0-1.5.7-1.5 1.2S11 17 12 17s1.5-.3 1.5-.8S13 15 12 15z" /></svg>);
+const PetRabbit = () => (<svg {...petProps}><path d="M8 9C7 6 6.5 3 8 3s2 3 2 6M16 9c1-3 1.5-6 0-6s-2 3-2 6" /><circle cx="12" cy="15" r="5" /><path d="M10 15h.01M14 15h.01" /><path d="M11.5 17.5h1" /></svg>);
+const PetFox = () => (<svg {...petProps}><path d="M3 5l5 4M21 5l-5 4" /><path d="M8 9l4 3 4-3 1 5-5 5-5-5 1-5z" /><path d="M10.5 13h.01M13.5 13h.01" /><path d="M12 15v1" /></svg>);
+const PetBear = () => (<svg {...petProps}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="12" cy="13" r="6" /><path d="M10 13h.01M14 13h.01" /><circle cx="12" cy="16" r="1.2" /></svg>);
+const PetPanda = () => (<svg {...petProps}><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="13" r="6.2" /><path d="M9 12.5c0-1 .7-1.5 1.5-1.5M15 12.5c0-1-.7-1.5-1.5-1.5" /><circle cx="12" cy="16" r="1" /></svg>);
+const PetOwl = () => (<svg {...petProps}><path d="M12 3c-4 0-7 3-7 8s3 10 7 10 7-5 7-10-3-8-7-8z" /><circle cx="9" cy="10" r="2" /><circle cx="15" cy="10" r="2" /><path d="M12 12l-1.5 2h3L12 12z" /></svg>);
+const PetFrog = () => (<svg {...petProps}><circle cx="7.5" cy="7" r="2.5" /><circle cx="16.5" cy="7" r="2.5" /><path d="M4 12a8 8 0 0016 0" /><path d="M4 12h16" /><path d="M7.5 7h.01M16.5 7h.01" /></svg>);
+const PetPenguin = () => (<svg {...petProps}><path d="M12 3c-3 0-5 2.5-5 7v6a5 5 0 0010 0v-6c0-4.5-2-7-5-7z" /><path d="M12 8c-1.5 0-2.5 1.5-2.5 4s1 5 2.5 5 2.5-2.5 2.5-5-1-4-2.5-4z" /><path d="M10.5 6h.01M13.5 6h.01" /><path d="M12 10l-1 1.5h2L12 10z" /></svg>);
+const PetTurtle = () => (<svg {...petProps}><circle cx="12" cy="12" r="5" /><path d="M12 7v10M7 12h10M8.5 8.5l7 7M15.5 8.5l-7 7" /><path d="M4 12h-1M20 12h1M6 17l-1 1M18 17l1 1" /></svg>);
+
+const PET_ICONS: (() => JSX.Element)[] = [PetCat, PetDog, PetRabbit, PetFox, PetBear, PetPanda, PetOwl, PetFrog, PetPenguin, PetTurtle];
+const PET_LABELS = ["Cat", "Dog", "Rabbit", "Fox", "Bear", "Panda", "Owl", "Frog", "Penguin", "Turtle"];
+
+/* Deterministically map a sub-agent's name to one of the pet icons so the same
+   agent always shows the same animal within a session. */
+function petIndex(name: string): number {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return hash % PET_ICONS.length;
+}
+function PetIcon({ name }: { name: string }) {
+  const Icon = PET_ICONS[petIndex(name)];
+  return <Icon />;
+}
+
+/* Reasoning-effort levels, ordered from Faster → Smarter for the slider. */
+const EFFORT_ORDER: Effort[] = ["low", "medium", "high", "extra", "max"];
+const EFFORT_LABEL: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  extra: "Extra",
+  max: "Max",
+};
 
 function toolIcon(tool?: string) {
   switch (tool) {
@@ -517,6 +718,7 @@ function toolIcon(tool?: string) {
     case "list_dir": return <IconFolder />;
     case "apply_edit": return <IconPencil />;
     case "run_terminal": return <IconTerminal />;
+    case "run_subagents": return <IconBranch />;
     default: return <IconTerminal />;
   }
 }
@@ -526,6 +728,7 @@ const TOOL_LABEL: Record<string, string> = {
   list_dir: "List directory",
   apply_edit: "Edit file",
   run_terminal: "Terminal command",
+  run_subagents: "Parallel sub-agents",
 };
 
 /* ---------- Markdown with memoized sanitized parse ---------- */
@@ -550,6 +753,25 @@ const PROGRESS_MESSAGES = [
   "Building a response…",
   "Almost there…",
 ] as const;
+
+/* Format a wall-clock timestamp (ms since epoch) as HH:MM:SS for step labels. */
+function formatTimestamp(ts?: number): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/* Format an elapsed duration (ms) as a compact human-readable string. */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m ${seconds}s`;
+}
 
 function base64Bytes(data: string): number {
   return Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
@@ -601,6 +823,7 @@ export default function App() {
   const [settings, setSettings] = useState<{ baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean } | null>(null);
   const sessionIdRef = useRef<string>("");
   const imageSequenceRef = useRef(0);
+  const turnStartRef = useRef<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -616,6 +839,20 @@ export default function App() {
       if (m.type === "turnComplete" || m.type === "turnStopped" || m.type === "error") {
         setStreaming(false);
         setStopping(false);
+        // stop any live thinking timer/animation on the last thinking card
+        setCards((prev) => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].kind === "thinking" && next[i].thinkingActive) { next[i] = { ...next[i], thinkingActive: false }; break; }
+          }
+          // append a summary card reporting the total time taken for the turn
+          if (turnStartRef.current > 0) {
+            const now = Date.now();
+            next.push({ kind: "summary", ts: now, durationMs: now - turnStartRef.current });
+            turnStartRef.current = 0;
+          }
+          return next;
+        });
       }
       setCards((prev) => {
         const next = [...prev];
@@ -633,11 +870,28 @@ export default function App() {
             return eventsToCards(m.events);
           case "textDelta":
             sessionIdRef.current = m.sessionId;
+            // once real answer text starts, freeze any active thinking card
+            for (let i = next.length - 1; i >= 0; i--) {
+              if (next[i].kind === "thinking" && next[i].thinkingActive) { next[i] = { ...next[i], thinkingActive: false }; break; }
+            }
             if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: (last.text ?? "") + m.text };
-            else next.push({ kind: "assistant", text: m.text });
+            else next.push({ kind: "assistant", text: m.text, ts: Date.now() });
             return next;
+          case "thinkingDelta": {
+            sessionIdRef.current = m.sessionId;
+            if (last?.kind === "thinking" && last.thinkingActive) {
+              next[next.length - 1] = { ...last, text: (last.text ?? "") + m.text };
+            } else {
+              next.push({ kind: "thinking", text: m.text, thinkingActive: true, thinkingSeconds: 0, ts: Date.now() });
+            }
+            return next;
+          }
           case "toolCall":
-            next.push({ kind: "tool", callId: m.callId, tool: m.tool, input: m.input });
+            // a tool call means the model finished reasoning for this step
+            for (let i = next.length - 1; i >= 0; i--) {
+              if (next[i].kind === "thinking" && next[i].thinkingActive) { next[i] = { ...next[i], thinkingActive: false }; break; }
+            }
+            next.push({ kind: "tool", callId: m.callId, tool: m.tool, input: m.input, ts: Date.now() });
             return next;
           case "approvalRequest":
             return next.map((c) => (c.callId === m.callId ? { ...c, pendingApproval: m.command } : c));
@@ -649,8 +903,10 @@ export default function App() {
             );
           case "toolResult":
             return next.map((c) => (c.callId === m.callId ? { ...c, output: m.output, ok: m.ok } : c));
+          case "subagentStatus":
+            return next.map((c) => (c.callId === m.callId ? { ...c, subagents: m.agents } : c));
           case "error":
-            next.push({ kind: "error", text: m.message });
+            next.push({ kind: "error", text: m.message, ts: Date.now() });
             return next;
           case "turnComplete":
             return next;
@@ -683,6 +939,9 @@ export default function App() {
             return next;
           case "attachmentError":
             setPasteError(m.message);
+            return next;
+          case "importResult":
+            setPasteError(m.ok ? "" : m.message);
             return next;
           case "contextEnabled":
             setContextOn(m.enabled);
@@ -720,6 +979,20 @@ export default function App() {
     }, 2400);
     return () => window.clearInterval(timer);
   }, [streaming]);
+
+  // Tick the elapsed-time counter on an active thinking card once a second.
+  useEffect(() => {
+    const hasActive = cards.some((c) => c.kind === "thinking" && c.thinkingActive);
+    if (!hasActive) return;
+    const timer = window.setInterval(() => {
+      setCards((prev) => prev.map((c) =>
+        c.kind === "thinking" && c.thinkingActive
+          ? { ...c, thinkingSeconds: (c.thinkingSeconds ?? 0) + 1 }
+          : c
+      ));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [cards]);
 
   // keyboard shortcuts for the pending approval: A approve · Shift+A always allow · R reject
   const pendingApprovalCard = cards.find((c) => c.kind === "tool" && c.pendingApproval);
@@ -770,12 +1043,14 @@ export default function App() {
       kind: "user",
       text: attachments.length > 0 ? `${value}${value ? "\n\n" : ""}[${attachments.map((f) => `📎 ${f.name}`).join(" ")}]` : value,
       images,
+      ts: Date.now(),
     }]);
     setInput("");
     setAttachments([]);
     setImages([]);
     setPasteError("");
     setStreaming(true);
+    turnStartRef.current = Date.now();
   };
 
   const onPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -817,7 +1092,11 @@ export default function App() {
   };
 
   const onRetry = () => {
-    if (sessionIdRef.current) send({ type: "retry", sessionId: sessionIdRef.current });
+    if (sessionIdRef.current) {
+      turnStartRef.current = Date.now();
+      setStreaming(true);
+      send({ type: "retry", sessionId: sessionIdRef.current });
+    }
   };
 
   const stop = () => {
@@ -847,7 +1126,7 @@ export default function App() {
       <div className="header">
         <span className="brand"><img src={logoUrl} alt="" className="brand-logo" /> {DISPLAY_NAME}</span>
         <span className="spacer" />
-        <button className="icon-btn" onClick={() => setHistoryOpen(true)} title="Chat history">
+        <button className="icon-btn" onClick={() => { send({ type: "requestSessionList" }); setHistoryOpen(true); }} title="Chat history">
           <IconHistory />
         </button>
         <button className="icon-btn" onClick={() => { setHistoryOpen(false); send({ type: "newSessionRequest" }); }} title="New session">
@@ -933,7 +1212,7 @@ export default function App() {
         ) : (
           <>
             {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
-            {streaming && cards[cards.length - 1]?.kind !== "assistant" && (
+            {streaming && cards[cards.length - 1]?.kind !== "assistant" && cards[cards.length - 1]?.kind !== "thinking" && (
               <div className="komind-loading" role="status" aria-live="polite" aria-label={`KoMind: ${progressMessage}`}>
                 <img src={logoUrl} alt="" />
                 <span className={`progress-color-${progressColor}`}>{progressMessage}</span>
@@ -977,18 +1256,39 @@ export default function App() {
                   </button>
                 ))}
                 <div className="menu-section">Reasoning effort</div>
-                <div className="effort-row" role="radiogroup" aria-label="Reasoning effort">
-                  {(["low", "medium", "high"] as Effort[]).map((lv) => (
-                    <button
-                      key={lv}
-                      className={effort === lv ? "active" : ""}
-                      onClick={() => { setEffort(lv); send({ type: "setEffort", effort: lv }); }}
-                      role="radio"
-                      aria-checked={effort === lv}
-                    >
-                      {lv === "low" ? "Low" : lv === "medium" ? "Med" : "High"}
-                    </button>
-                  ))}
+                <div className="effort-slider">
+                  <div className="effort-slider-head">
+                    <span className="es-label">Effort</span>
+                    <span className="es-value">{EFFORT_LABEL[effort]}</span>
+                    <span className="es-help" title="Faster = quicker, lower-cost replies. Smarter = deeper reasoning at higher effort.">
+                      <IconHelp />
+                    </span>
+                  </div>
+                  <div className="effort-slider-ends">
+                    <span>Faster</span>
+                    <span>Smarter</span>
+                  </div>
+                  <div className="effort-track">
+                    <div className="es-rail" />
+                    <div className="es-fill" style={{ width: `${(EFFORT_ORDER.indexOf(effort) / (EFFORT_ORDER.length - 1)) * 100}%` }} />
+                    <div className="es-dots" aria-hidden="true">
+                      {EFFORT_ORDER.map((lv) => <span key={lv} />)}
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={EFFORT_ORDER.length - 1}
+                      step={1}
+                      value={EFFORT_ORDER.indexOf(effort)}
+                      onChange={(e) => {
+                        const lv = EFFORT_ORDER[Number(e.target.value)];
+                        setEffort(lv);
+                        send({ type: "setEffort", effort: lv });
+                      }}
+                      aria-label="Reasoning effort"
+                      aria-valuetext={EFFORT_LABEL[effort]}
+                    />
+                  </div>
                 </div>
                 <div className="menu-sep" />
                 {addingModel ? (
@@ -1100,6 +1400,9 @@ export default function App() {
                   </button>
                   <button role="menuitem" onClick={() => { setAttachMenuOpen(false); send({ type: "attachFolder" }); }}>
                     <IconMenuFolder /> Add folder
+                  </button>
+                  <button role="menuitem" onClick={() => { setAttachMenuOpen(false); send({ type: "importSession" }); }} title="Import a chat or coding session exported from ChatGPT, Claude, Gemini, or an API — continue it mid-thread with any model">
+                    <IconImport /> Import chat from another AI
                   </button>
                   <button role="menuitem" onClick={() => { setInput((value) => value || "/"); setAttachMenuOpen(false); requestAnimationFrame(() => textareaRef.current?.focus()); }}>
                     <IconSlashBox /> Slash commands
@@ -1283,20 +1586,83 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
 
 function eventsToCards(events: SessionEvent[]): Card[] {
   return events.map((e) => {
-    if (e.kind === "user") return { kind: "user" as const, text: e.text, images: e.images };
-    if (e.kind === "assistantText") return { kind: "assistant" as const, text: e.text };
-    if (e.kind === "error") return { kind: "error" as const, text: e.message };
-    if (e.kind === "toolCall") return { kind: "tool" as const, callId: e.callId, tool: e.tool as ToolName, input: e.input };
-    return { kind: "tool" as const, callId: e.callId, output: e.output, ok: e.ok };
+    if (e.kind === "user") return { kind: "user" as const, text: e.text, images: e.images, ts: e.ts };
+    if (e.kind === "assistantText") return { kind: "assistant" as const, text: e.text, ts: e.ts };
+    if (e.kind === "error") return { kind: "error" as const, text: e.message, ts: e.ts };
+    if (e.kind === "toolCall") return { kind: "tool" as const, callId: e.callId, tool: e.tool as ToolName, input: e.input, ts: e.ts };
+    return { kind: "tool" as const, callId: e.callId, output: e.output, ok: e.ok, ts: e.ts };
   });
+}
+
+/* ---------- Thinking card ---------- */
+function ThinkingCard({ card }: { card: Card }) {
+  const active = Boolean(card.thinkingActive);
+  // Auto-expand while thinking; collapse once done, but let the user override.
+  const [userToggled, setUserToggled] = useState(false);
+  const [open, setOpen] = useState(true);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!userToggled) setOpen(active);
+  }, [active, userToggled]);
+
+  // Keep the reasoning scrolled to the newest line while it streams.
+  useEffect(() => {
+    if (active && open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [card.text, active, open]);
+
+  const seconds = card.thinkingSeconds ?? 0;
+  const label = active
+    ? `Thinking${seconds > 0 ? ` for ${seconds}s` : "…"}`
+    : `Thought${seconds > 0 ? ` for ${seconds}s` : ""}`;
+
+  return (
+    <div className="thinking-card">
+      <button
+        type="button"
+        className="thinking-head"
+        onClick={() => { setUserToggled(true); setOpen((o) => !o); }}
+        aria-expanded={open}
+        aria-label={`${open ? "Collapse" : "Expand"} reasoning`}
+      >
+        <span className="thinking-title">
+          <img src={logoUrl} alt="" className={active ? "spin-pulse" : ""} />
+          {label}
+        </span>
+        {active && <span className="thinking-meta">reasoning…</span>}
+        {!active && formatTimestamp(card.ts) && <span className="thinking-meta">{formatTimestamp(card.ts)}</span>}
+        <span className={`thinking-chevron ${open ? "expanded" : ""}`}><IconChevronDown /></span>
+      </button>
+      {open && card.text && (
+        <div className="thinking-body" ref={bodyRef}>{card.text}</div>
+      )}
+    </div>
+  );
 }
 
 function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   const [expanded, setExpanded] = useState(false);
 
+  const timestamp = formatTimestamp(card.ts);
+
+  if (card.kind === "summary") {
+    return (
+      <div className="summary-card" role="status">
+        <IconClock />
+        <span>Total time taken: <span className="total">{formatDuration(card.durationMs ?? 0)}</span></span>
+        {timestamp && <span className="at">{timestamp}</span>}
+      </div>
+    );
+  }
+
+  if (card.kind === "thinking") {
+    return <ThinkingCard card={card} />;
+  }
+
   if (card.kind === "assistant") {
     return (
       <div className="assistant">
+        {timestamp && <span className="step-ts">{timestamp}</span>}
         <Markdown text={card.text ?? ""} />
       </div>
     );
@@ -1305,6 +1671,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
     return (
       <div className="user-row">
         <div className="user-bubble">
+          {timestamp && <span className="step-ts">{timestamp}</span>}
           {card.images && card.images.length > 0 && (
             <div className="user-images">
               {card.images.map((image, i) => <img key={`${image.name}-${i}`} src={imageSrc(image)} alt={image.name} />)}
@@ -1319,7 +1686,10 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
     return (
       <div className="error-card" role="alert">
         <IconAlert />
-        <span className="msg">{card.text}</span>
+        <span className="msg">
+          {timestamp && <span className="step-ts">{timestamp}</span>}
+          {card.text}
+        </span>
         <button onClick={onRetry} title="Retry the last request"><IconRotate /> Retry</button>
       </div>
     );
@@ -1339,7 +1709,9 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   const args = card.input?.path ? String(card.input.path) : "";
   const summary = card.tool === "run_terminal"
     ? String(card.input?.command ?? "")
-    : args;
+    : card.tool === "run_subagents"
+      ? (Array.isArray(card.input?.tasks) ? (card.input!.tasks as { name?: unknown }[]).map((t) => String(t?.name ?? "agent")).join(", ") : "")
+      : args;
 
   return (
     <div className={`tool-card ${statusClass}`}>
@@ -1355,9 +1727,35 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
         <span className="tool-status" style={{ color: statusColor }}>
           {statusIcon} {statusText}
         </span>
+        {timestamp && <span className="thinking-meta" style={{ marginLeft: 8 }}>{timestamp}</span>}
         <span className={`tool-chevron ${expanded ? "expanded" : ""}`}><IconChevronDown /></span>
       </button>
       {summary && <div className="tool-summary" title={summary}>{summary}</div>}
+      {card.tool === "run_subagents" && card.subagents && card.subagents.length > 0 && (
+        <div className="subagents">
+          {card.subagents.map((agent, i) => {
+            const working = agent.status === "running";
+            const stateIcon = working
+              ? <img src={logoUrl} alt="" className="komind-status-logo" />
+              : agent.status === "done" ? <IconCheck /> : <IconX />;
+            const stateText = working ? "Working…" : agent.status === "done" ? "Done" : "Failed";
+            return (
+              <div key={`${agent.name}-${i}`} className={`subagent-row ${agent.status}`}>
+                <span className={`subagent-pet ${working ? "working" : ""}`} title={PET_LABELS[petIndex(agent.name)]}>
+                  <PetIcon name={agent.name} />
+                </span>
+                <span className="subagent-name" title={agent.name}>
+                  {agent.name}
+                  <span className="subagent-kind"> · {PET_LABELS[petIndex(agent.name)]}</span>
+                </span>
+                <span className={`subagent-state ${agent.status}`}>
+                  {stateIcon} {stateText}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {expanded && card.pendingApproval && (
         <div className="tool-body">
           <div className="cmd-block">{card.pendingApproval}</div>
