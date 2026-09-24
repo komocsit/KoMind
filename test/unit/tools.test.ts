@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { executeTool, resolvePath, TOOL_DEFS } from "../../src/host/tools";
+import { executeTool, resolvePath, TOOL_DEFS, buildEditInfo } from "../../src/host/tools";
 import type { ToolContext } from "../../src/host/tools";
 import path from "path";
 
@@ -7,7 +7,8 @@ function mockCtx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     readFile: vi.fn(async () => "file contents"),
     listDir: vi.fn(async () => ["a.txt", "b/"]),
-    applyEdit: vi.fn(async () => { }),
+    applyEdit: vi.fn(async () => ({ before: "old contents", after: "new contents" })),
+    createFile: vi.fn(async () => { }),
     runTerminal: vi.fn(async () => ({ exitCode: 0 })),
     requestApproval: vi.fn(async () => true),
     workspaceRoot: () => "C:/work/proj",
@@ -50,7 +51,10 @@ describe("executeTool", () => {
     const r = await executeTool("apply_edit", { path: "a.txt", oldString: "old", newString: "new" }, "c1", ctx);
     expect(ctx.requestApproval).not.toHaveBeenCalled();
     expect(ctx.applyEdit).toHaveBeenCalled();
-    expect(r).toEqual({ ok: true, output: "Edited and saved a.txt" });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("Edited and saved a.txt");
+    expect(r.editInfo).toBeDefined();
+    expect(r.editInfo?.path).toBe("a.txt");
   });
   it("apply_edit routes through approval when autoApproveEdits is false", async () => {
     const ctx = mockCtx({ autoApproveEdits: false });
@@ -88,7 +92,7 @@ describe("executeTool", () => {
     expect(r.ok).toBe(false);
   });
   it("exposes the tool defs for the API", () => {
-    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "run_terminal", "run_subagents"]);
+    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents"]);
   });
 
   it("run_subagents reports when sub-agents are unavailable", async () => {
@@ -133,5 +137,48 @@ describe("executeTool", () => {
     expect(runSubagents).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
     expect(r.output).toContain("at most");
+  });
+
+  it("create_file writes a new file and returns a diff", async () => {
+    const createFile = vi.fn(async () => { });
+    const ctx = mockCtx({ createFile });
+    const r = await executeTool("create_file", { path: "new.ts", content: "line1\nline2" }, "c1", ctx);
+    expect(createFile).toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    expect(r.editInfo?.created).toBe(true);
+    expect(r.editInfo?.additions).toBe(2);
+    expect(r.editInfo?.deletions).toBe(0);
+  });
+
+  it("create_file routes through approval and does not write when rejected", async () => {
+    const createFile = vi.fn(async () => { });
+    const ctx = mockCtx({ autoApproveEdits: false, requestApproval: async () => false, createFile });
+    const r = await executeTool("create_file", { path: "new.ts", content: "x" }, "c1", ctx);
+    expect(createFile).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("buildEditInfo", () => {
+  it("reports additions and deletions for a single-line change", () => {
+    const info = buildEditInfo("a.txt", "one\ntwo\nthree", "one\nCHANGED\nthree");
+    expect(info.additions).toBe(1);
+    expect(info.deletions).toBe(1);
+    expect(info.path).toBe("a.txt");
+    expect(info.lines.some((l) => l.type === "add" && l.text === "CHANGED")).toBe(true);
+    expect(info.lines.some((l) => l.type === "del" && l.text === "two")).toBe(true);
+  });
+  it("treats a created file as all additions", () => {
+    const info = buildEditInfo("new.txt", "", "a\nb\nc", true);
+    expect(info.created).toBe(true);
+    expect(info.additions).toBe(3);
+    expect(info.deletions).toBe(0);
+  });
+  it("collapses large unchanged regions into a gap marker", () => {
+    const big = Array.from({ length: 40 }, (_, i) => `line${i}`).join("\n");
+    const changed = big.replace("line20", "LINE20");
+    const info = buildEditInfo("big.txt", big, changed);
+    expect(info.lines.length).toBeLessThan(20);
+    expect(info.lines.some((l) => l.text === "\u2026")).toBe(true);
   });
 });

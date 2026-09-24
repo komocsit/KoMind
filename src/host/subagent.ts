@@ -30,7 +30,7 @@ export interface SubagentOptions {
 export type SubagentStatusListener = (agents: SubagentStatusView[]) => void;
 
 /** Default tool set for a sub-agent: everything except spawning further sub-agents. */
-const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal"];
+const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit", "create_file", "run_terminal"];
 
 /**
  * Run a single sub-agent to completion. It is headless: it streams nothing to
@@ -40,7 +40,7 @@ const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit
 export async function runSubagent(task: SubagentTask, opts: SubagentOptions, signal?: AbortSignal): Promise<SubagentResult> {
     const allowed = opts.allowedTools ?? DEFAULT_SUBAGENT_TOOLS;
     const tools = TOOL_DEFS.filter((t) => t.name !== "run_subagents" && allowed.includes(t.name));
-    const maxRounds = opts.maxRounds ?? 15;
+    const maxRounds = opts.maxRounds ?? 25;
     const messages: AnthropicMessage[] = [{ role: "user", content: [{ type: "text", text: task.prompt }] }];
     let lastText = "";
 

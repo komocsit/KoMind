@@ -28,6 +28,11 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     signal?.addEventListener("abort", () => { clearTimeout(timer); reject(abortError()); }, { once: true });
   });
 
+  // Retry transient failures automatically: first attempt + MAX_RETRIES retries.
+  const MAX_RETRIES = 5;
+  const isRetryable = (e: any): boolean =>
+    e?.status >= 500 || e?.status === 429 || e?.code === "ETIMEDOUT" || e?.code === "ECONNRESET" || e?.code === "ECONNREFUSED" || e?.code === "EPIPE";
+
   function setKey(key: string): void {
     cfg = { ...cfg, apiKey: key };
     if (!sdk) client = new Anthropic({ baseURL: cfg.baseUrl, apiKey: key });
@@ -43,65 +48,80 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
       stream: true,
     };
     if (cfg.effort) params.reasoning_effort = cfg.effort;
-    let stream: AsyncIterable<unknown>;
-    for (let attempt = 0; ; attempt++) {
+
+    // A single attempt: open the stream and fully consume it. Both the request
+    // and the consumption loop can throw (the Anthropic SDK surfaces request
+    // errors during iteration), so they share one scope. `emitted` reports
+    // whether any content already reached the UI: once the model has started
+    // streaming, retrying would duplicate output, so we do not retry then.
+    const attemptStream = async (): Promise<{ result: AnthropicMessage[]; emitted: boolean }> => {
+      if (signal?.aborted) throw abortError();
+      const stream = client.messages.stream(params, { signal });
+
+      let text = "";
+      let emitted = false;
+      const toolUses: { id: string; name: string; input: Record<string, unknown> }[] = [];
+      let currentTool: { id: string; name: string; json: string } | undefined;
+
+      const flushTool = () => {
+        if (!currentTool) return;
+        try {
+          toolUses.push({ id: currentTool.id, name: currentTool.name, input: JSON.parse(currentTool.json || "{}") });
+        } catch { toolUses.push({ id: currentTool.id, name: currentTool.name, input: { _error: "malformed JSON input" } }); }
+        currentTool = undefined;
+      };
+
       try {
-        if (signal?.aborted) throw abortError();
-        stream = client.messages.stream(params, { signal });
-        break;
-      }
-      catch (e: any) {
+        for await (const raw of stream) {
+          if (signal?.aborted) throw abortError();
+          const ev = raw as any;
+          if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
+            currentTool = { id: ev.content_block.id, name: ev.content_block.name, json: "" };
+          } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+            text += ev.delta.text;
+            emitted = true;
+            onEvent({ type: "textDelta", text: ev.delta.text });
+          } else if (ev.type === "content_block_delta" && (ev.delta?.type === "thinking_delta" || ev.delta?.type === "reasoning_delta")) {
+            // Extended-thinking streams emit the model's reasoning as it forms.
+            const chunk = ev.delta.thinking ?? ev.delta.text ?? "";
+            if (chunk) { emitted = true; onEvent({ type: "thinkingDelta", text: chunk }); }
+          } else if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && currentTool) {
+            currentTool.json += ev.delta.partial_json;
+          } else if (ev.type === "content_block_stop" && currentTool) {
+            flushTool();
+          } else if (ev.type === "message_stop") {
+            flushTool(); // some streams omit content_block_stop for tool_use blocks
+          }
+        }
+      } catch (e: any) {
         if (signal?.aborted || e?.name === "AbortError") throw abortError();
-        const retryable = e?.status >= 500 || e?.code === "ETIMEDOUT" || e?.code === "ECONNRESET";
-        if (!retryable || attempt >= 3) throw e;
-        await sleepWithSignal(500 * 2 ** attempt, signal);
+        // Preserve the emitted flag so the retry loop can decide whether it is
+        // safe to retry without duplicating already-streamed output.
+        if (emitted && e && typeof e === "object") e.__emitted = true;
+        throw e;
       }
-    }
+      flushTool();
 
-    let text = "";
-    const toolUses: { id: string; name: string; input: Record<string, unknown> }[] = [];
-    let currentTool: { id: string; name: string; json: string } | undefined;
-
-    const flushTool = () => {
-      if (!currentTool) return;
-      try {
-        toolUses.push({ id: currentTool.id, name: currentTool.name, input: JSON.parse(currentTool.json || "{}") });
-      } catch { toolUses.push({ id: currentTool.id, name: currentTool.name, input: { _error: "malformed JSON input" } }); }
-      currentTool = undefined;
+      const content: unknown[] = [];
+      if (text) content.push({ type: "text", text });
+      for (const t of toolUses) { content.push({ type: "tool_use", id: t.id, name: t.name, input: t.input }); onEvent({ type: "toolUse", ...t }); }
+      onEvent({ type: "endTurn" });
+      return { result: [{ role: "assistant", content }], emitted };
     };
 
-    try {
-      for await (const raw of stream) {
-        if (signal?.aborted) throw abortError();
-        const ev = raw as any;
-        if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
-          currentTool = { id: ev.content_block.id, name: ev.content_block.name, json: "" };
-        } else if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-          text += ev.delta.text;
-          onEvent({ type: "textDelta", text: ev.delta.text });
-        } else if (ev.type === "content_block_delta" && (ev.delta?.type === "thinking_delta" || ev.delta?.type === "reasoning_delta")) {
-          // Extended-thinking streams emit the model's reasoning as it forms.
-          const chunk = ev.delta.thinking ?? ev.delta.text ?? "";
-          if (chunk) onEvent({ type: "thinkingDelta", text: chunk });
-        } else if (ev.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && currentTool) {
-          currentTool.json += ev.delta.partial_json;
-        } else if (ev.type === "content_block_stop" && currentTool) {
-          flushTool();
-        } else if (ev.type === "message_stop") {
-          flushTool(); // some streams omit content_block_stop for tool_use blocks
-        }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { result } = await attemptStream();
+        return result;
+      } catch (e: any) {
+        if (signal?.aborted || e?.name === "AbortError") throw abortError();
+        // Only retry transient failures that happened before any output was
+        // streamed. Retrying after partial output would duplicate it.
+        if (!isRetryable(e) || e?.__emitted === true || attempt >= MAX_RETRIES) throw e;
+        // Exponential backoff capped at 8s so 5 retries stay responsive.
+        await sleepWithSignal(Math.min(500 * 2 ** attempt, 8000), signal);
       }
-    } catch (e: any) {
-      if (signal?.aborted || e?.name === "AbortError") throw abortError();
-      throw e;
     }
-    flushTool();
-
-    const content: unknown[] = [];
-    if (text) content.push({ type: "text", text });
-    for (const t of toolUses) { content.push({ type: "tool_use", id: t.id, name: t.name, input: t.input }); onEvent({ type: "toolUse", ...t }); }
-    onEvent({ type: "endTurn" });
-    return [{ role: "assistant", content }];
   }
 
   function setModel(model: string): void { cfg = { ...cfg, model }; }

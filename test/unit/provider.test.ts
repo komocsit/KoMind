@@ -42,20 +42,83 @@ describe("createProvider.streamTurn", () => {
     expect(events).toContainEqual({ type: "toolUse", id: "c1", name: "read_file", input: { path: "a.txt" } });
   });
 
-  it("retries 5xx errors up to 3 times then succeeds", async () => {
+  it("retries transient errors up to 5 times then succeeds", async () => {
     const stream = async function* () { yield {}; };
     let calls = 0;
     const sdk = {
       messages: {
         stream: vi.fn(() => {
           calls++;
-          if (calls < 4) { const e = new Error("server error") as any; e.status = 500; throw e; }
+          if (calls < 6) { const e = new Error("server error") as any; e.status = 500; throw e; }
           return stream();
         }),
       },
     } as unknown as AnthropicClientLike;
     await createProvider(cfg, sdk).streamTurn([], [], () => { });
-    expect(calls).toBe(4); // 3 failures + 1 success
+    expect(calls).toBe(6); // 5 failures + 1 success
+  });
+
+  it("gives up after 5 retries and surfaces the error", async () => {
+    let calls = 0;
+    const sdk = {
+      messages: {
+        stream: vi.fn(() => { calls++; const e = new Error("server error") as any; e.status = 503; throw e; }),
+      },
+    } as unknown as AnthropicClientLike;
+    await expect(createProvider(cfg, sdk).streamTurn([], [], () => { })).rejects.toThrow("server error");
+    expect(calls).toBe(6); // first attempt + 5 retries
+  });
+
+  it("retries 429 rate-limit errors", async () => {
+    const stream = async function* () { yield {}; };
+    let calls = 0;
+    const sdk = {
+      messages: {
+        stream: vi.fn(() => {
+          calls++;
+          if (calls < 3) { const e = new Error("rate limited") as any; e.status = 429; throw e; }
+          return stream();
+        }),
+      },
+    } as unknown as AnthropicClientLike;
+    await createProvider(cfg, sdk).streamTurn([], [], () => { });
+    expect(calls).toBe(3); // 2 failures + 1 success
+  });
+
+  it("retries connection errors (ECONNRESET/ETIMEDOUT)", async () => {
+    const stream = async function* () { yield {}; };
+    let calls = 0;
+    const sdk = {
+      messages: {
+        stream: vi.fn(() => {
+          calls++;
+          if (calls === 1) { const e = new Error("reset") as any; e.code = "ECONNRESET"; throw e; }
+          if (calls === 2) { const e = new Error("timeout") as any; e.code = "ETIMEDOUT"; throw e; }
+          return stream();
+        }),
+      },
+    } as unknown as AnthropicClientLike;
+    await createProvider(cfg, sdk).streamTurn([], [], () => { });
+    expect(calls).toBe(3);
+  });
+
+  it("does not retry once output has already been streamed", async () => {
+    let calls = 0;
+    const sdk = {
+      messages: {
+        stream: vi.fn(() => {
+          calls++;
+          return (async function* () {
+            yield { type: "content_block_delta", delta: { type: "text_delta", text: "partial" } };
+            const e = new Error("mid-stream failure") as any; e.status = 500; throw e;
+          })();
+        }),
+      },
+    } as unknown as AnthropicClientLike;
+    const events: unknown[] = [];
+    await expect(createProvider(cfg, sdk).streamTurn([], [], (e) => events.push(e))).rejects.toThrow("mid-stream failure");
+    expect(calls).toBe(1); // no retry — output already emitted
+    expect(events).toContainEqual({ type: "textDelta", text: "partial" });
   });
 
   it("does not retry 4xx errors", async () => {

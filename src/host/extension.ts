@@ -8,9 +8,10 @@ import { runSubagents } from "./subagent";
 import { parseImport, type ImportedConversation } from "./sessionImport";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
-import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment } from "../shared/protocol";
+import { resolvePath } from "./tools";
+import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment, EditInfo } from "../shared/protocol";
 
-const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "run_terminal", "run_subagents"];
+const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents"];
 
 function toToolName(name: string): ToolName {
   return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : "read_file";
@@ -211,7 +212,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       thinkingDelta: (t: string) => this.post({ type: "thinkingDelta", sessionId: id, text: t }),
       toolCall: (callId: string, tool: string, input: Record<string, unknown>) =>
         this.post({ type: "toolCall", sessionId: id, callId, tool: toToolName(tool), input }),
-      toolResult: (callId: string, ok: boolean, output: string) => this.post({ type: "toolResult", sessionId: id, callId, ok, output }),
+      toolResult: (callId: string, ok: boolean, output: string, editInfo?: EditInfo) => this.post({ type: "toolResult", sessionId: id, callId, ok, output, editInfo }),
       subagentStatus: (callId: string, agents: { name: string; status: "running" | "done" | "failed" }[]) => this.post({ type: "subagentStatus", sessionId: id, callId, agents }),
       error: (message: string) => this.post({ type: "error", sessionId: id, message }),
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
@@ -235,16 +236,28 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         // Save any existing in-editor changes first, then save the accepted agent edit.
         // This is explicit and does not depend on the user's files.autoSave setting.
         if (doc.isDirty && !await doc.save()) throw new Error("Existing file changes could not be saved.");
-        const text = doc.getText();
-        const count = text.split(oldString).length - 1;
+        const before = doc.getText();
+        const count = before.split(oldString).length - 1;
         if (count === 0) throw new Error("oldString not found in file.");
         if (count > 1) throw new Error(`oldString found ${count} times; must be unique.`);
-        const start = text.indexOf(oldString);
+        const start = before.indexOf(oldString);
         const edit = new vscode.WorkspaceEdit();
         edit.replace(uri, new vscode.Range(doc.positionAt(start), doc.positionAt(start + oldString.length)), newString);
         const ok = await vscode.workspace.applyEdit(edit);
         if (!ok) throw new Error("Edit rejected by editor.");
         if (!await doc.save()) throw new Error("Edited file could not be saved.");
+        const after = before.slice(0, start) + newString + before.slice(start + oldString.length);
+        return { before, after };
+      },
+      async createFile(p, content) {
+        const uri = vscode.Uri.file(p);
+        // Fail if the file already exists so creation never clobbers existing content.
+        let exists = false;
+        try { await vscode.workspace.fs.stat(uri); exists = true; } catch { /* not found is expected */ }
+        if (exists) throw new Error("File already exists. Use apply_edit to modify an existing file.");
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.isDirty) await doc.save();
       },
       async runTerminal(command, cwd, onOutput, signal) {
         return new Promise((resolve) => {
@@ -277,7 +290,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       requestApproval: (command, callId, tool, signal) => {
         // persistent "always allow" grants bypass the approval card
         if (tool === "run_terminal" && this.alwaysAllow.terminal) return Promise.resolve(true);
-        if (tool === "apply_edit" && this.alwaysAllow.edits) return Promise.resolve(true);
+        if ((tool === "apply_edit" || tool === "create_file") && this.alwaysAllow.edits) return Promise.resolve(true);
         return this.approvals.request(this.currentSessionId ?? "", callId, command, tool ?? "run_terminal", signal);
       },
       // Sub-agents inherit the current mode's tool restrictions and share the
@@ -325,6 +338,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "attachFiles": await this.pickFiles(); break;
       case "importSession": await this.importSession(); break;
+      case "openFile": await this.openFile(m.path, m.view); break;
       case "stop": {
         const session = this.sessions.get(m.sessionId);
         if (!session?.stop()) this.post({ type: "turnStopped", sessionId: m.sessionId });
@@ -345,7 +359,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           if (tool === "run_terminal") {
             this.alwaysAllow.terminal = true;
             void this.context.workspaceState.update("koMind.alwaysAllow.terminal", true);
-          } else if (tool === "apply_edit") {
+          } else if (tool === "apply_edit" || tool === "create_file") {
             this.alwaysAllow.edits = true;
             void this.context.workspaceState.update("koMind.alwaysAllow.edits", true);
           }
@@ -477,6 +491,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendSessionList() {
     this.post({ type: "sessionList", sessions: await this.store.list() });
+  }
+
+  /**
+ * Open a workspace file in the editor from a tool card. view: "file" opens
+ * the file directly; view: "diff" opens it against its last committed
+ * version using Git built-in diff, falling back to opening the file when
+ * no Git baseline is available.
+   */
+  async openFile(rel: string, view: "file" | "diff"): Promise<void> {
+    let abs: string;
+    try {
+      abs = resolvePath(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, rel);
+    } catch (e) {
+      vscode.window.showErrorMessage(`KoMind: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    const uri = vscode.Uri.file(abs);
+    try {
+      await vscode.workspace.fs.stat(uri);
+    } catch {
+      vscode.window.showErrorMessage(`KoMind: file not found: ${rel}`);
+      return;
+    }
+    if (view === "diff") {
+      const gitUri = uri.with({ scheme: "git", query: JSON.stringify({ path: uri.fsPath, ref: "HEAD" }) });
+      try {
+        await vscode.commands.executeCommand("vscode.diff", gitUri, uri, `${path.basename(abs)} (Working Tree)`);
+        return;
+      } catch {
+        // No Git baseline (untracked/new file or no repo) — fall through to a plain open.
+      }
+    }
+    await vscode.window.showTextDocument(uri, { preview: false });
   }
 
   /**

@@ -1,13 +1,13 @@
 import type { Provider, AnthropicMessage } from "./provider";
 import { executeTool, TOOL_DEFS, type ToolContext, type ToolDef } from "./tools";
 import type { SessionStore } from "./store";
-import type { SessionEvent, ToolName, ImageAttachment } from "../shared/protocol";
+import type { SessionEvent, ToolName, ImageAttachment, EditInfo } from "../shared/protocol";
 
 export interface AgentUi {
   textDelta(t: string): void;
   thinkingDelta?(t: string): void;
   toolCall(callId: string, tool: string, input: Record<string, unknown>): void;
-  toolResult(callId: string, ok: boolean, output: string): void;
+  toolResult(callId: string, ok: boolean, output: string, editInfo?: EditInfo): void;
   subagentStatus?(callId: string, agents: { name: string; status: "running" | "done" | "failed" }[]): void;
   error(msg: string): void;
   turnComplete(): void;
@@ -23,8 +23,14 @@ export class AgentSession {
   /** Tool names the agent may use; null = all tools (build mode). */
   allowedTools: ToolName[] | null = null;
 
-  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[] }) {
+  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[]; maxToolRounds?: number }) {
     if (opts.initialMessages) this.messages.push(...opts.initialMessages);
+  }
+
+  /** Hard cap on tool-use rounds within a single turn. */
+  private get maxToolRounds(): number {
+    const n = this.opts.maxToolRounds;
+    return Number.isFinite(n) && (n as number) > 0 ? Math.floor(n as number) : 50;
   }
 
   private get tools(): ToolDef[] {
@@ -77,8 +83,9 @@ export class AgentSession {
 
     let partialText = "";
     let activeTool: { id: string; name: string } | undefined;
+    const maxRounds = this.maxToolRounds;
     try {
-      for (let round = 0; round < 25; round++) {
+      for (let round = 0; round < maxRounds; round++) {
         partialText = "";
         const assistantMsgs = await this.opts.provider.streamTurn(this.messages, this.tools, (e) => {
           if (signal.aborted) return;
@@ -113,13 +120,37 @@ export class AgentSession {
           await this.opts.store.append(this.opts.sessionId, { kind: "toolCall", callId: tu.id, tool: tu.name, input: tu.input, ts: Date.now() });
           const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx, signal, (agents) => this.opts.ui.subagentStatus?.(tu.id, agents));
           activeTool = undefined;
-          this.opts.ui.toolResult(tu.id, r.ok, r.output);
-          await this.opts.store.append(this.opts.sessionId, { kind: "toolResult", callId: tu.id, ok: r.ok, output: r.output, ts: Date.now() });
+          this.opts.ui.toolResult(tu.id, r.ok, r.output, r.editInfo);
+          await this.opts.store.append(this.opts.sessionId, { kind: "toolResult", callId: tu.id, ok: r.ok, output: r.output, ts: Date.now(), editInfo: r.editInfo });
           results.push({ type: "tool_result", tool_use_id: tu.id, content: r.output, is_error: !r.ok });
         }
         this.messages.push({ role: "user", content: results });
       }
-      this.opts.ui.error("Max tool rounds (25) reached.");
+      // Hit the per-turn tool-round cap. Rather than dropping the turn with a
+      // bare error, ask the model for a final wrap-up with tools disabled so
+      // the user gets a usable summary of progress and next steps.
+      try {
+        let wrapText = "";
+        const wrapMsgs = await this.opts.provider.streamTurn(
+          [...this.messages, { role: "user", content: [{ type: "text", text: `You have reached the ${maxRounds}-tool-step limit for this turn. Stop using tools now. Briefly summarize what you accomplished, what remains, and the exact next step. The user can send "continue" to resume.` }] }],
+          [],
+          (e) => {
+            if (signal.aborted) return;
+            if (e.type === "textDelta") { wrapText += e.text; this.opts.ui.textDelta(e.text); }
+            else if (e.type === "thinkingDelta") this.opts.ui.thinkingDelta?.(e.text);
+          },
+          signal,
+        );
+        if (!signal.aborted) {
+          this.messages.push(...wrapMsgs);
+          if (wrapText) await this.opts.store.append(this.opts.sessionId, { kind: "assistantText", text: wrapText, ts: Date.now() });
+        }
+      } catch {
+        // A failed wrap-up should not mask the round-limit notice below.
+      }
+      const limitMsg = `Reached the ${maxRounds}-step limit for this turn. Send "continue" to keep going.`;
+      this.opts.ui.error(limitMsg);
+      await this.opts.store.append(this.opts.sessionId, { kind: "error", message: limitMsg, ts: Date.now() });
       this.opts.ui.turnComplete();
     } catch (e) {
       if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {

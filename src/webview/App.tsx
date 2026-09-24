@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView, EditInfo } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 const DISPLAY_NAME = __KOMIND_DISPLAY_NAME__;
@@ -28,6 +28,8 @@ interface Card {
   durationMs?: number;
   /** tool cards for run_subagents: live status of each spawned sub-agent */
   subagents?: SubagentStatusView[];
+  /** structured diff for apply_edit/create_file tool cards */
+  editInfo?: EditInfo;
 }
 
 const CSS = `
@@ -390,8 +392,10 @@ const CSS = `
   .md hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 12px 0; }
 
   /* KoMind-branded loading state */
-  .komind-loading { display: inline-flex; align-items: center; gap: 8px; padding: 8px 2px; opacity: 0.85; }
-  .komind-loading img { width: 28px; height: 28px; object-fit: contain; animation: km-brand-pulse 1.2s ease-in-out infinite; }
+  .komind-loading { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 2px; opacity: 0.85; }
+  .komind-loading img { position: absolute; top: 0; left: 0; width: 28px; height: 28px; object-fit: contain; animation: km-sweep-lr 1.8s ease-in-out infinite, km-brand-pulse 1.2s ease-in-out infinite; will-change: left; }
+  .komind-loading .km-sweep-track { position: relative; width: 100%; height: 28px; overflow: hidden; }
+  @keyframes km-sweep-lr { from { left: 0; transform: translateX(0); } to { left: 100%; transform: translateX(-100%); } }
   .komind-loading span {
     font-size: 11px;
     font-weight: 700;
@@ -555,6 +559,38 @@ const CSS = `
     padding: 8px 10px;
   }
 
+  /* File-edit diff — rendered inside apply_edit/create_file tool cards */
+  .diff-stat { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; font-size: 11px; }
+  .diff-stat .add { color: var(--km-accent); font-weight: 700; }
+  .diff-stat .del { color: var(--vscode-errorForeground); font-weight: 700; }
+  .diff-actions { display: flex; gap: 6px; padding: 2px 10px 6px; }
+  .diff-actions button { font-size: 11px; min-height: 24px; padding: 3px 8px; }
+  .diff-block {
+    margin: 4px 10px 8px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius-sm);
+    overflow: auto;
+    max-height: 320px;
+    background: var(--vscode-textCodeBlock-background);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .diff-line { display: flex; white-space: pre; }
+  .diff-line .ln {
+    flex: none; width: 34px; text-align: right; padding: 0 6px 0 4px;
+    opacity: 0.4; user-select: none;
+    border-right: 1px solid var(--vscode-panel-border);
+  }
+  .diff-line .mark { flex: none; width: 16px; text-align: center; opacity: 0.7; }
+  .diff-line .txt { flex: 1; padding-right: 8px; white-space: pre-wrap; word-break: break-word; }
+  .diff-line.add { background: color-mix(in srgb, var(--km-accent) 14%, transparent); }
+  .diff-line.add .mark { color: var(--km-accent); }
+  .diff-line.del { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); }
+  .diff-line.del .mark { color: var(--vscode-errorForeground); }
+  .diff-line.gap { opacity: 0.45; justify-content: center; }
+  .diff-line.gap .txt { text-align: center; padding: 0; }
+
   /* Error card */
   .error-card {    display: flex; align-items: flex-start; gap: 8px;
     border: 1px solid var(--vscode-errorForeground);
@@ -667,6 +703,9 @@ const IconAlert = () => (<svg {...iconProps} width={15} height={15}><path d="M10
 const IconFile = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
 const IconFolder = () => (<svg {...iconProps} width={13} height={13}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>);
 const IconPencil = () => (<svg {...iconProps} width={13} height={13}><path d="M17 3a2.8 2.8 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>);
+const IconFilePlus = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /><path d="M12 12v6M9 15h6" /></svg>);
+const IconOpen = () => (<svg {...iconProps} width={13} height={13}><path d="M15 3h6v6" /><path d="M10 14L21 3" /><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /></svg>);
+const IconDiff = () => (<svg {...iconProps} width={13} height={13}><path d="M12 3v6M9 6h6" /><path d="M9 18h6" /><path d="M5 21h14a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2z" /></svg>);
 const IconTerminal = () => (<svg {...iconProps} width={13} height={13}><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>);
 const IconRotate = () => (<svg {...iconProps} width={13} height={13}><path d="M1 4v6h6" /><path d="M3.5 15a9 9 0 102.1-9.4L1 10" /></svg>);
 const IconHelp = () => (<svg {...iconProps} width={14} height={14}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>);
@@ -717,6 +756,7 @@ function toolIcon(tool?: string) {
     case "read_file": return <IconFile />;
     case "list_dir": return <IconFolder />;
     case "apply_edit": return <IconPencil />;
+    case "create_file": return <IconFilePlus />;
     case "run_terminal": return <IconTerminal />;
     case "run_subagents": return <IconBranch />;
     default: return <IconTerminal />;
@@ -727,6 +767,7 @@ const TOOL_LABEL: Record<string, string> = {
   read_file: "Read file",
   list_dir: "List directory",
   apply_edit: "Edit file",
+  create_file: "Create file",
   run_terminal: "Terminal command",
   run_subagents: "Parallel sub-agents",
 };
@@ -793,6 +834,32 @@ function readImage(file: File, name: string): Promise<ImageAttachment> {
 
 function imageSrc(image: ImageAttachment): string {
   return `data:${image.mediaType};base64,${image.data}`;
+}
+
+/* ---------- File-edit diff ---------- */
+function DiffView({ info }: { info: EditInfo }) {
+  return (
+    <div className="diff-block" role="group" aria-label={`Diff for ${info.path}`}>
+      {info.lines.map((line, i) => {
+        if (line.text === "…" && line.type === "context" && line.oldLine === undefined && line.newLine === undefined) {
+          return (
+            <div key={i} className="diff-line gap">
+              <span className="txt">⋯ unchanged lines ⋯</span>
+            </div>
+          );
+        }
+        const mark = line.type === "add" ? "+" : line.type === "del" ? "−" : "\u00a0";
+        const ln = line.type === "add" ? line.newLine : line.type === "del" ? line.oldLine : line.newLine;
+        return (
+          <div key={i} className={`diff-line ${line.type}`}>
+            <span className="ln">{ln ?? ""}</span>
+            <span className="mark">{mark}</span>
+            <span className="txt">{line.text || "\u00a0"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ---------- App ---------- */
@@ -902,7 +969,7 @@ export default function App() {
                 : c
             );
           case "toolResult":
-            return next.map((c) => (c.callId === m.callId ? { ...c, output: m.output, ok: m.ok } : c));
+            return next.map((c) => (c.callId === m.callId ? { ...c, output: m.output, ok: m.ok, editInfo: m.editInfo } : c));
           case "subagentStatus":
             return next.map((c) => (c.callId === m.callId ? { ...c, subagents: m.agents } : c));
           case "error":
@@ -1214,7 +1281,7 @@ export default function App() {
             {cards.map((c, i) => <CardView key={i} card={c} onRetry={onRetry} />)}
             {streaming && cards[cards.length - 1]?.kind !== "assistant" && cards[cards.length - 1]?.kind !== "thinking" && (
               <div className="komind-loading" role="status" aria-live="polite" aria-label={`KoMind: ${progressMessage}`}>
-                <img src={logoUrl} alt="" />
+                <div className="km-sweep-track"><img src={logoUrl} alt="" /></div>
                 <span className={`progress-color-${progressColor}`}>{progressMessage}</span>
               </div>
             )}
@@ -1590,7 +1657,7 @@ function eventsToCards(events: SessionEvent[]): Card[] {
     if (e.kind === "assistantText") return { kind: "assistant" as const, text: e.text, ts: e.ts };
     if (e.kind === "error") return { kind: "error" as const, text: e.message, ts: e.ts };
     if (e.kind === "toolCall") return { kind: "tool" as const, callId: e.callId, tool: e.tool as ToolName, input: e.input, ts: e.ts };
-    return { kind: "tool" as const, callId: e.callId, output: e.output, ok: e.ok, ts: e.ts };
+    return { kind: "tool" as const, callId: e.callId, output: e.output, ok: e.ok, editInfo: e.editInfo, ts: e.ts };
   });
 }
 
@@ -1707,6 +1774,8 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   const statusColor = awaiting ? "var(--km-warn)" : doneErr || rejected ? "var(--vscode-errorForeground)" : doneOk ? "var(--km-accent)" : "var(--vscode-foreground)";
 
   const args = card.input?.path ? String(card.input.path) : "";
+  const editInfo = card.editInfo;
+  const isFileEdit = card.tool === "apply_edit" || card.tool === "create_file";
   const summary = card.tool === "run_terminal"
     ? String(card.input?.command ?? "")
     : card.tool === "run_subagents"
@@ -1730,7 +1799,30 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
         {timestamp && <span className="thinking-meta" style={{ marginLeft: 8 }}>{timestamp}</span>}
         <span className={`tool-chevron ${expanded ? "expanded" : ""}`}><IconChevronDown /></span>
       </button>
-      {summary && <div className="tool-summary" title={summary}>{summary}</div>}
+      {summary && (
+        <div className="tool-summary" title={summary}>
+          {summary}
+          {isFileEdit && editInfo && (
+            <span className="diff-stat">
+              {editInfo.additions > 0 && <span className="add">+{editInfo.additions}</span>}
+              {editInfo.deletions > 0 && <span className="del">{"\u2212"}{editInfo.deletions}</span>}
+            </span>
+          )}
+        </div>
+      )}
+      {isFileEdit && args && (card.output !== undefined) && (
+        <div className="diff-actions">
+          <button onClick={() => send({ type: "openFile", path: args, view: "file" })} title="Open this file in the editor">
+            <IconOpen /> Open file
+          </button>
+          <button onClick={() => send({ type: "openFile", path: args, view: "diff" })} title="Open a diff against the last committed version">
+            <IconDiff /> Open diff
+          </button>
+        </div>
+      )}
+      {isFileEdit && editInfo && editInfo.lines.length > 0 && (
+        <DiffView info={editInfo} />
+      )}
       {card.tool === "run_subagents" && card.subagents && card.subagents.length > 0 && (
         <div className="subagents">
           {card.subagents.map((agent, i) => {
@@ -1776,7 +1868,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
           </div>
         </div>
       )}
-      {expanded && card.output !== undefined && (
+      {expanded && card.output !== undefined && !(isFileEdit && editInfo) && (
         <div className="tool-body">
           <pre className="tool-output">{card.output}</pre>
         </div>

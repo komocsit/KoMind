@@ -33,7 +33,8 @@ function ctx(): ToolContext {
   return {
     readFile: async () => "content of a.txt",
     listDir: async () => ["a.txt"],
-    applyEdit: vi.fn(async () => { }),
+    applyEdit: vi.fn(async () => ({ before: "", after: "" })),
+    createFile: vi.fn(async () => { }),
     runTerminal: vi.fn(async () => ({ exitCode: 0 })),
     requestApproval: async () => true,
     workspaceRoot: () => "C:/work/proj",
