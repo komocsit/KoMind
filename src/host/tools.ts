@@ -1,5 +1,5 @@
 import * as path from "path";
-import type { ToolName, EditInfo, DiffLine } from "../shared/protocol";
+import type { ToolName, ToolId, EditInfo, DiffLine } from "../shared/protocol";
 
 export interface SubagentTaskInput { name: string; prompt: string; }
 export interface SubagentRunResult { name: string; ok: boolean; output: string; }
@@ -12,17 +12,20 @@ export interface ToolContext {
   /** Create a new file with the given contents and save it. Fails if the file already exists. */
   createFile(p: string, content: string): Promise<void>;
   runTerminal(command: string, cwd: string | undefined, onOutput: (chunk: string) => void, signal?: AbortSignal): Promise<{ exitCode: number }>;
-  requestApproval(command: string, callId: string, tool?: ToolName, signal?: AbortSignal): Promise<boolean>;
+  requestApproval(command: string, callId: string, tool?: ToolId, signal?: AbortSignal): Promise<boolean>;
   workspaceRoot(): string | undefined;
   autoApproveEdits: boolean;
   autoApproveTerminal: boolean;
   /** Run several sub-agents concurrently. Absent when sub-agents are disabled (e.g. inside a sub-agent). */
   runSubagents?(tasks: SubagentTaskInput[], signal?: AbortSignal, onStatus?: (agents: SubagentStatusInput[]) => void): Promise<SubagentRunResult[]>;
+  /** Return the full instructions for a named skill, or undefined if unknown. Absent when skills are disabled. */
+  loadSkill?(name: string): string | undefined;
 }
 
-export interface ToolDef { name: ToolName; description: string; schema: Record<string, unknown>; }
+export interface ToolDef { name: string; description: string; schema: Record<string, unknown>; }
 
-export const TOOL_DEFS: ToolDef[] = [
+/** Built-in tool definitions. Their names are the fixed `ToolName` literals. */
+export const TOOL_DEFS: (ToolDef & { name: ToolName })[] = [
   { name: "read_file", description: "Read a text file from the workspace. Returns full contents.", schema: { type: "object", properties: { path: { type: "string", description: "Workspace-relative path" } }, required: ["path"] } },
   { name: "list_dir", description: "List entries of a workspace directory.", schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
   { name: "apply_edit", description: "Replace an exact string in a file and save it immediately. oldString must match exactly and appear exactly once.", schema: { type: "object", properties: { path: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["path", "oldString", "newString"] } },
@@ -48,6 +51,17 @@ export const TOOL_DEFS: ToolDef[] = [
         },
       },
       required: ["tasks"],
+    },
+  },
+  {
+    name: "load_skill",
+    description: "Load the full instructions for a Skill by name. Skills are reusable instruction packages; the available ones are listed in your system prompt. Call this when a task matches a skill, then follow the returned instructions. Returns an error if the skill name is unknown.",
+    schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The exact name of the skill to load, as shown in the skills list." },
+      },
+      required: ["name"],
     },
   },
 ];
@@ -192,6 +206,14 @@ export async function executeTool(name: string, input: Record<string, unknown>, 
           .map((r) => `### Sub-agent: ${r.name} ${r.ok ? "(completed)" : "(failed)"}\n${r.output}`)
           .join("\n\n");
         return { ok: allOk, output: body };
+      }
+      case "load_skill": {
+        if (!ctx.loadSkill) return { ok: false, output: "Skills are not available in this context." };
+        const skillName = String(input.name ?? "").trim();
+        if (!skillName) return { ok: false, output: "load_skill error: provide the name of the skill to load." };
+        const skillBody = ctx.loadSkill(skillName);
+        if (skillBody === undefined) return { ok: false, output: `load_skill error: no skill named "${skillName}". Check the skills list in your system prompt.` };
+        return { ok: true, output: skillBody };
       }
       default:
         return { ok: false, output: `Unknown tool: ${name}` };

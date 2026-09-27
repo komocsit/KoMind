@@ -1,5 +1,6 @@
 import type { Provider, AnthropicMessage } from "./provider";
-import { executeTool, TOOL_DEFS, type ToolContext, type ToolDef } from "./tools";
+import { type ToolContext, type ToolDef } from "./tools";
+import { ToolRegistry } from "./toolRegistry";
 import type { SessionStore } from "./store";
 import type { SessionEvent, ToolName, ImageAttachment, EditInfo } from "../shared/protocol";
 
@@ -22,9 +23,11 @@ export class AgentSession {
   private stopped = false;
   /** Tool names the agent may use; null = all tools (build mode). */
   allowedTools: ToolName[] | null = null;
+  private readonly registry: ToolRegistry;
 
-  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[]; maxToolRounds?: number }) {
+  constructor(private readonly opts: { sessionId: string; provider: Provider; ctx: ToolContext; store: SessionStore; ui: AgentUi; initialMessages?: AnthropicMessage[]; maxToolRounds?: number; registry?: ToolRegistry; system?: () => string | undefined }) {
     if (opts.initialMessages) this.messages.push(...opts.initialMessages);
+    this.registry = opts.registry ?? new ToolRegistry();
   }
 
   /** Hard cap on tool-use rounds within a single turn. */
@@ -34,7 +37,7 @@ export class AgentSession {
   }
 
   private get tools(): ToolDef[] {
-    return this.allowedTools === null ? TOOL_DEFS : TOOL_DEFS.filter((t) => this.allowedTools!.includes(t.name));
+    return this.registry.listTools(this.allowedTools);
   }
 
   seedFromEvents(events: SessionEvent[]): void {
@@ -99,7 +102,7 @@ export class AgentSession {
           else if (e.type === "toolUse") {
             this.opts.ui.toolCall(e.id, e.name, e.input);
           }
-        }, signal);
+        }, signal, this.opts.system?.());
         if (signal.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
         this.messages.push(...assistantMsgs);
         const assistantMsg = assistantMsgs[assistantMsgs.length - 1];
@@ -118,7 +121,7 @@ export class AgentSession {
           activeTool = { id: tu.id, name: tu.name };
           if (signal.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
           await this.opts.store.append(this.opts.sessionId, { kind: "toolCall", callId: tu.id, tool: tu.name, input: tu.input, ts: Date.now() });
-          const r = await executeTool(tu.name, tu.input, tu.id, this.opts.ctx, signal, (agents) => this.opts.ui.subagentStatus?.(tu.id, agents));
+          const r = await this.registry.execute(tu.name, tu.input, tu.id, this.opts.ctx, signal, (agents) => this.opts.ui.subagentStatus?.(tu.id, agents));
           activeTool = undefined;
           this.opts.ui.toolResult(tu.id, r.ok, r.output, r.editInfo);
           await this.opts.store.append(this.opts.sessionId, { kind: "toolResult", callId: tu.id, ok: r.ok, output: r.output, ts: Date.now(), editInfo: r.editInfo });

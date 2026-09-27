@@ -10,7 +10,7 @@ export interface AnthropicClientLike {
   models?: { list(params?: unknown): Promise<{ data?: { id?: string }[] } | AsyncIterable<{ id?: string }>> };
 }
 export interface Provider {
-  streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal): Promise<AnthropicMessage[]>;
+  streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal, system?: string): Promise<AnthropicMessage[]>;
   setKey(key: string): void;
   setModel(model: string): void;
   setEffort(effort: Effort): void;
@@ -39,7 +39,7 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     // when an injected sdk is used (tests), the sdk object stays as-is — key swap is a no-op there
   }
 
-  async function streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal): Promise<AnthropicMessage[]> {
+  async function streamTurn(messages: AnthropicMessage[], tools: ToolDef[], onEvent: (e: StreamEvent) => void, signal?: AbortSignal, system?: string): Promise<AnthropicMessage[]> {
     const params: Record<string, unknown> = {
       model: cfg.model,
       max_tokens: cfg.maxTokens,
@@ -48,6 +48,7 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
       stream: true,
     };
     if (cfg.effort) params.reasoning_effort = cfg.effort;
+    if (system && system.trim()) params.system = system;
 
     // A single attempt: open the stream and fully consume it. Both the request
     // and the consumption loop can throw (the Anthropic SDK surfaces request

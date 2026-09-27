@@ -1,5 +1,6 @@
 import type { Provider, AnthropicMessage } from "./provider";
-import { executeTool, TOOL_DEFS, type ToolContext } from "./tools";
+import { type ToolContext } from "./tools";
+import { ToolRegistry } from "./toolRegistry";
 import type { ToolName, SubagentStatus, SubagentStatusView } from "../shared/protocol";
 
 export interface SubagentTask {
@@ -24,13 +25,15 @@ export interface SubagentOptions {
     maxRounds?: number;
     /** Called whenever a sub-agent starts or finishes so the UI can show live progress. */
     onStatus?: SubagentStatusListener;
+    /** Tool registry the sub-agent runs against. Defaults to built-in tools only. */
+    registry?: ToolRegistry;
 }
 
 /** Notified whenever any sub-agent's status changes. Receives the full snapshot. */
 export type SubagentStatusListener = (agents: SubagentStatusView[]) => void;
 
 /** Default tool set for a sub-agent: everything except spawning further sub-agents. */
-const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit", "create_file", "run_terminal"];
+const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "load_skill"];
 
 /**
  * Run a single sub-agent to completion. It is headless: it streams nothing to
@@ -39,7 +42,9 @@ const DEFAULT_SUBAGENT_TOOLS: ToolName[] = ["read_file", "list_dir", "apply_edit
  */
 export async function runSubagent(task: SubagentTask, opts: SubagentOptions, signal?: AbortSignal): Promise<SubagentResult> {
     const allowed = opts.allowedTools ?? DEFAULT_SUBAGENT_TOOLS;
-    const tools = TOOL_DEFS.filter((t) => t.name !== "run_subagents" && allowed.includes(t.name));
+    const restricted = allowed.filter((t) => t !== "run_subagents");
+    const registry = opts.registry ?? new ToolRegistry();
+    const tools = registry.listTools(restricted);
     const maxRounds = opts.maxRounds ?? 25;
     const messages: AnthropicMessage[] = [{ role: "user", content: [{ type: "text", text: task.prompt }] }];
     let lastText = "";
@@ -63,7 +68,7 @@ export async function runSubagent(task: SubagentTask, opts: SubagentOptions, sig
             const results: unknown[] = [];
             for (const tu of toolUses) {
                 if (signal?.aborted) throw Object.assign(new Error("Stopped"), { name: "AbortError" });
-                const r = await executeTool(tu.name, tu.input, tu.id, opts.ctx, signal);
+                const r = await registry.execute(tu.name, tu.input, tu.id, opts.ctx, signal);
                 results.push({ type: "tool_result", tool_use_id: tu.id, content: r.output, is_error: !r.ok });
             }
             messages.push({ role: "user", content: results });

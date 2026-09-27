@@ -1,4 +1,11 @@
-export type ToolName = "read_file" | "list_dir" | "apply_edit" | "create_file" | "run_terminal" | "run_subagents";
+export type ToolName = "read_file" | "list_dir" | "apply_edit" | "create_file" | "run_terminal" | "run_subagents" | "load_skill";
+
+/**
+ * A tool identifier as it appears in messages. Built-in tools use the fixed
+ * `ToolName` literals; tools contributed by MCP servers, skills, or plugins use
+ * arbitrary (namespaced) strings, so name-carrying fields accept any string.
+ */
+export type ToolId = string;
 
 /** A single line in a rendered diff for a file edit/creation. */
 export interface DiffLine {
@@ -36,7 +43,7 @@ export interface SubagentStatusView {
 
 export interface ToolCallView {
   callId: string;
-  tool: ToolName;
+  tool: ToolId;
   input: Record<string, unknown>;
 }
 
@@ -53,13 +60,25 @@ export interface ImageAttachment {
   data: string;
 }
 
+export interface SlashCommandView {
+  name: string;
+  description: string;
+  plugin?: string;
+}
+
+/** A skill surfaced to the webview `/` suggestion menu. */
+export interface SkillView {
+  name: string;
+  description: string;
+}
+
 export type HostToWebviewMsg =
   | { type: "textDelta"; sessionId: string; text: string }
   | { type: "thinkingDelta"; sessionId: string; text: string }
-  | { type: "toolCall"; sessionId: string; callId: string; tool: ToolName; input: Record<string, unknown> }
+  | { type: "toolCall"; sessionId: string; callId: string; tool: ToolId; input: Record<string, unknown> }
   | { type: "toolResult"; sessionId: string; callId: string; ok: boolean; output: string; editInfo?: EditInfo }
   | { type: "subagentStatus"; sessionId: string; callId: string; agents: SubagentStatusView[] }
-  | { type: "approvalRequest"; sessionId: string; callId: string; command: string; tool: ToolName }
+  | { type: "approvalRequest"; sessionId: string; callId: string; command: string; tool: ToolId }
   | { type: "approvalResolved"; sessionId: string; callId: string; approved: boolean }
   | { type: "error"; sessionId: string; message: string }
   | { type: "turnComplete"; sessionId: string }
@@ -72,7 +91,9 @@ export type HostToWebviewMsg =
   | { type: "attachments"; files: FileAttachment[]; images: ImageAttachment[]; warning?: string }
   | { type: "attachmentError"; message: string }
   | { type: "importResult"; ok: boolean; message: string; count?: number }
-  | { type: "contextEnabled"; enabled: boolean };
+  | { type: "contextEnabled"; enabled: boolean }
+  | { type: "commands"; commands: SlashCommandView[] }
+  | { type: "skills"; skills: SkillView[] };
 
 export type WebviewToHostMsg =
   | { type: "userMessage"; sessionId: string; text: string; attachments?: FileAttachment[]; images?: ImageAttachment[] }
@@ -86,6 +107,8 @@ export type WebviewToHostMsg =
   | { type: "deleteSession"; sessionId: string }
   | { type: "setSessionArchived"; sessionId: string; archived: boolean }
   | { type: "requestConfig" }
+  | { type: "requestCommands" }
+  | { type: "requestSkills" }
   | { type: "setModel"; model: string }
   | { type: "addModel"; model: string }
   | { type: "removeModel"; model: string }
@@ -104,6 +127,6 @@ export type WebviewToHostMsg =
 export type SessionEvent =
   | { kind: "user"; text: string; ts: number; images?: ImageAttachment[] }
   | { kind: "assistantText"; text: string; ts: number }
-  | { kind: "toolCall"; callId: string; tool: ToolName; input: Record<string, unknown>; ts: number }
+  | { kind: "toolCall"; callId: string; tool: ToolId; input: Record<string, unknown>; ts: number }
   | { kind: "toolResult"; callId: string; ok: boolean; output: string; ts: number; editInfo?: EditInfo }
   | { kind: "error"; message: string; ts: number };

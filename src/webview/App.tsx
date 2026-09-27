@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView, EditInfo } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView, EditInfo, SlashCommandView, SkillView } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 const DISPLAY_NAME = __KOMIND_DISPLAY_NAME__;
@@ -657,6 +657,18 @@ const CSS = `
   .composer .send-btn.stop:hover { opacity: 0.85; }
   .stop-square { width: 10px; height: 10px; border-radius: 1px; background: currentColor; }
   .composer .hint { margin-top: 5px; font-size: 10.5px; opacity: 0.55; text-align: center; }
+  /* Slash-command autocomplete popup above the composer */
+  .slash-menu { position: absolute; left: 10px; right: 10px; bottom: 100%; margin-bottom: 6px; z-index: 70;
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background)); border: 1px solid var(--vscode-panel-border);
+    border-radius: var(--km-radius); box-shadow: 0 6px 20px rgba(0,0,0,0.28); max-height: 220px; overflow-y: auto; padding: 4px; }
+  .slash-menu .slash-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; padding: 6px 8px;
+    border: none; background: none; color: var(--vscode-foreground); border-radius: var(--km-radius-sm); cursor: pointer; }
+  .slash-menu .slash-item:hover, .slash-menu .slash-item.active { background: var(--km-primary-soft); }
+  .slash-menu .slash-item .cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+  .slash-menu .slash-item .desc { font-size: 10.5px; opacity: 0.7; }
+  .slash-badge { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 5px; margin-right: 6px; border-radius: 4px; vertical-align: middle; font-family: var(--vscode-font-family); }
+  .slash-badge.command { background: var(--km-primary-soft); color: var(--km-primary); }
+  .slash-badge.skill { background: color-mix(in srgb, var(--km-accent) 18%, transparent); color: var(--km-accent); }
   .paste-error { margin: 0 0 6px; color: var(--vscode-errorForeground); font-size: 11px; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -752,6 +764,7 @@ const EFFORT_LABEL: Record<Effort, string> = {
 };
 
 function toolIcon(tool?: string) {
+  if (tool && tool.startsWith("mcp__")) return <IconBranch />;
   switch (tool) {
     case "read_file": return <IconFile />;
     case "list_dir": return <IconFolder />;
@@ -759,6 +772,7 @@ function toolIcon(tool?: string) {
     case "create_file": return <IconFilePlus />;
     case "run_terminal": return <IconTerminal />;
     case "run_subagents": return <IconBranch />;
+    case "load_skill": return <IconSparkMini />;
     default: return <IconTerminal />;
   }
 }
@@ -770,7 +784,24 @@ const TOOL_LABEL: Record<string, string> = {
   create_file: "Create file",
   run_terminal: "Terminal command",
   run_subagents: "Parallel sub-agents",
+  load_skill: "Load skill",
 };
+
+/**
+ * Human-readable label for a tool. Built-ins use TOOL_LABEL; MCP tools
+ * (`mcp__<server>__<tool>`) render as "server · tool" so the namespaced id
+ * never leaks into the UI.
+ */
+function toolLabel(tool?: string): string {
+  if (!tool) return "";
+  if (tool.startsWith("mcp__")) {
+    const rest = tool.slice("mcp__".length);
+    const sep = rest.indexOf("__");
+    if (sep >= 0) return `${rest.slice(0, sep)} · ${rest.slice(sep + 2)}`;
+    return rest;
+  }
+  return TOOL_LABEL[tool] ?? tool;
+}
 
 /* ---------- Markdown with memoized sanitized parse ---------- */
 const Markdown = React.memo(function Markdown({ text }: { text: string }) {
@@ -888,6 +919,9 @@ export default function App() {
   const [alwaysAllow, setAlwaysAllow] = useState({ terminal: false, edits: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<{ baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean } | null>(null);
+  const [commands, setCommands] = useState<SlashCommandView[]>([]);
+  const [skills, setSkills] = useState<SkillView[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
   const sessionIdRef = useRef<string>("");
   const imageSequenceRef = useRef(0);
   const turnStartRef = useRef<number>(0);
@@ -1016,6 +1050,12 @@ export default function App() {
           case "settings":
             setSettings(m);
             return next;
+          case "commands":
+            setCommands(m.commands);
+            return next;
+          case "skills":
+            setSkills(m.skills);
+            return next;
           default:
             return next;
         }
@@ -1027,6 +1067,8 @@ export default function App() {
     send({ type: "requestSessionList" });
     send({ type: "requestConfig" });
     send({ type: "requestSettings" });
+    send({ type: "requestCommands" });
+    send({ type: "requestSkills" });
   }, []);
 
   useEffect(() => {
@@ -1095,6 +1137,41 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Slash-command autocomplete: active only when the input begins with '/'
+  // and has no space yet (still typing the command name).
+  // Slash suggestions combine plugin commands and skills so the user always
+  // sees what is available and what will run. Commands expand to a prompt
+  // template; skills are loaded by the agent via load_skill.
+  type SlashSuggestion =
+    | { kind: "command"; name: string; description: string; plugin?: string }
+    | { kind: "skill"; name: string; description: string };
+  const slashQuery = /^\/([A-Za-z0-9-]*)$/.exec(input);
+  const slashMatches: SlashSuggestion[] = slashQuery
+    ? (() => {
+        const q = slashQuery[1].toLowerCase();
+        const cmd: SlashSuggestion[] = commands
+          .filter((c) => c.name.toLowerCase().startsWith(q))
+          .map((c) => ({ kind: "command" as const, name: c.name, description: c.description, plugin: c.plugin }));
+        const skl: SlashSuggestion[] = skills
+          .filter((sk) => sk.name.toLowerCase().startsWith(q))
+          .map((sk) => ({ kind: "skill" as const, name: sk.name, description: sk.description }));
+        return [...cmd, ...skl].slice(0, 8);
+      })()
+    : [];
+  const slashOpen = slashMatches.length > 0;
+
+  const applySuggestion = (item: SlashSuggestion) => {
+    if (item.kind === "command") {
+      setInput(`/${item.name} `);
+    } else {
+      // Skills are not slash commands; prime a request that makes the agent
+      // load the named skill before continuing.
+      setInput(`Use the "${item.name}" skill: `);
+    }
+    setSlashIndex(0);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
 
   const submit = (text?: string) => {
     const value = (text ?? input).trim();
@@ -1457,6 +1534,27 @@ export default function App() {
           </div>
         )}
         <div className="composer-row">
+          {slashOpen && (
+            <div className="slash-menu" role="listbox" aria-label="Commands and skills">
+              {slashMatches.map((c, i) => (
+                <button
+                  key={`${c.kind}-${c.name}`}
+                  role="option"
+                  aria-selected={i === slashIndex}
+                  className={`slash-item ${i === slashIndex ? "active" : ""}`}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  onClick={() => applySuggestion(c)}
+                >
+                  <span className="cmd">
+                    <span className={`slash-badge ${c.kind}`}>{c.kind === "skill" ? "skill" : "cmd"}</span>
+                    {c.kind === "command" ? `/${c.name}` : c.name}
+                    {c.kind === "command" && c.plugin ? ` · ${c.plugin}` : ""}
+                  </span>
+                  {c.description && <span className="desc">{c.description}</span>}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="attach-menu-wrap">
             {attachMenuOpen && (
               <>
@@ -1501,6 +1599,16 @@ export default function App() {
             onChange={(e) => setInput(e.target.value)}
             onPaste={(e) => void onPaste(e)}
             onKeyDown={(e) => {
+              if (slashOpen) {
+                if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex((i) => (i + 1) % slashMatches.length); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length); return; }
+                if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                  e.preventDefault();
+                  applySuggestion(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]);
+                  return;
+                }
+                if (e.key === "Escape") { e.preventDefault(); setInput(""); return; }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (!streaming) submit();
@@ -1789,10 +1897,10 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
         className="tool-head"
         onClick={() => setExpanded((open) => !open)}
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Collapse" : "Expand"} ${TOOL_LABEL[card.tool ?? ""] ?? card.tool} details`}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${toolLabel(card.tool)} details`}
       >
         {toolIcon(card.tool)}
-        <span className="tool-name">{TOOL_LABEL[card.tool ?? ""] ?? card.tool}</span>
+        <span className="tool-name">{toolLabel(card.tool)}</span>
         <span className="tool-status" style={{ color: statusColor }}>
           {statusIcon} {statusText}
         </span>

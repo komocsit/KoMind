@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "azure-devops": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@azure-devops/mcp@latest",
+        "cisidevelopment",
+        "-d",
+        "all",
+        "-a",
+        "pat"
+      ],
+      "env": {
+        "PERSONAL_ACCESS_TOKEN": "${AZURE_DEVOPS_PAT_B64}"
+      },
+      "timeout": 120000,
+      "disabled": false
+    }
+  }
+}

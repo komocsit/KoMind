@@ -81,7 +81,7 @@ describe("executeTool", () => {
   it("run_terminal calls requestApproval and runs when approved", async () => {
     const ctx = mockCtx();
     const r = await executeTool("run_terminal", { command: "npm test" }, "c1", ctx);
-    expect(ctx.requestApproval).toHaveBeenCalledWith("npm test", "c1", "run_terminal");
+    expect(ctx.requestApproval).toHaveBeenCalledWith("npm test", "c1", "run_terminal", undefined);
     expect(ctx.runTerminal).toHaveBeenCalled();
     expect(r.ok).toBe(true);
   });
@@ -92,7 +92,7 @@ describe("executeTool", () => {
     expect(r.ok).toBe(false);
   });
   it("exposes the tool defs for the API", () => {
-    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents"]);
+    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents", "load_skill"]);
   });
 
   it("run_subagents reports when sub-agents are unavailable", async () => {
@@ -155,6 +155,34 @@ describe("executeTool", () => {
     const ctx = mockCtx({ autoApproveEdits: false, requestApproval: async () => false, createFile });
     const r = await executeTool("create_file", { path: "new.ts", content: "x" }, "c1", ctx);
     expect(createFile).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+  });
+
+  it("load_skill reports when skills are unavailable", async () => {
+    const r = await executeTool("load_skill", { name: "pdf" }, "c1", mockCtx());
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("not available");
+  });
+
+  it("load_skill returns the skill body when found", async () => {
+    const loadSkill = vi.fn(() => "## PDF skill\nStep 1...");
+    const r = await executeTool("load_skill", { name: "pdf" }, "c1", mockCtx({ loadSkill }));
+    expect(loadSkill).toHaveBeenCalledWith("pdf");
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("PDF skill");
+  });
+
+  it("load_skill errors for an unknown skill name", async () => {
+    const loadSkill = vi.fn(() => undefined);
+    const r = await executeTool("load_skill", { name: "nope" }, "c1", mockCtx({ loadSkill }));
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("no skill named");
+  });
+
+  it("load_skill requires a non-empty name", async () => {
+    const loadSkill = vi.fn(() => "body");
+    const r = await executeTool("load_skill", { name: "" }, "c1", mockCtx({ loadSkill }));
+    expect(loadSkill).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
   });
 });

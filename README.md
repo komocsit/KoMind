@@ -29,6 +29,96 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 | `koMind.effort` | `high` | Default reasoning effort sent to the API |
 | `koMind.autoApproveEdits` | `true` | Apply file edits automatically |
 | `koMind.autoApproveTerminal` | `false` | Require approval for terminal commands |
+| `koMind.mcpServers` | `{}` | MCP servers to connect on startup (see below) |
+
+## MCP servers (external tools)
+
+KoMind can connect to [Model Context Protocol](https://modelcontextprotocol.io) servers to add third-party tools (GitHub, databases, docs, browsers, …) without any code changes. Configure them under `koMind.mcpServers`, keyed by a short server name:
+
+```json
+"koMind.mcpServers": {
+  "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
+  "docs":   { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer …" } }
+}
+```
+
+- **stdio servers** — set `command` plus optional `args`, `env`, `cwd`.
+- **HTTP servers** — set `url` plus optional `headers` (Streamable HTTP transport).
+- Set `"enabled": false` to keep a server configured but disconnected.
+
+Connected servers' tools appear to the agent namespaced as `mcp__<server>__<tool>` and render as `server · tool` in the chat. **Every MCP tool call requires explicit approval** — external servers are untrusted and the always-allow grants do not apply to them.
+
+> **Security:** MCP servers are external processes with access to your machine and any credentials you pass them. Only add servers you trust.
+
+## Skills
+
+Skills are reusable instruction packages the agent loads on demand. A skill is a directory containing a `SKILL.md` file:
+
+```
+.komind/skills/
+  pdf-forms/
+    SKILL.md
+```
+
+`SKILL.md` has optional YAML frontmatter (`name`, `description`) followed by the instruction body:
+
+```markdown
+---
+name: pdf-forms
+description: Fill and extract data from PDF forms
+---
+
+# Filling PDF forms
+
+1. Use `pdftk` to inspect fields: `pdftk form.pdf dump_data_fields`
+2. ...
+```
+
+KoMind discovers skills from two locations (workspace takes precedence on name collisions):
+
+- `<workspace>/.komind/skills/` — project-specific skills, checked into the repo
+- `<globalStorage>/skills/` — personal skills available in every workspace
+
+At startup the agent's system prompt gets a compact index of skill names and descriptions. When a request matches, the model calls the `load_skill` tool to pull in the full body before proceeding — so many skills can exist without bloating the context.
+
+> Skills are untrusted content: their instructions are treated as data. Review a workspace's skills before relying on them.
+
+## Plugins & slash commands
+
+Plugins bundle skills, MCP servers, slash commands, and a system-prompt fragment behind a single manifest. A plugin is a directory containing `komind-plugin.json`:
+
+```
+.komind/plugins/
+  code-quality/
+    komind-plugin.json
+    skills/
+      style-guide/
+        SKILL.md
+```
+
+```json
+{
+  "name": "code-quality",
+  "description": "Code review helpers",
+  "systemPrompt": "Prefer small, focused diffs.",
+  "commands": [
+    { "name": "review", "description": "Review a diff", "template": "Review the following and flag issues:\n\n{{args}}" }
+  ],
+  "mcpServers": {
+    "linter": { "command": "npx", "args": ["-y", "@example/mcp-linter"] }
+  },
+  "skills": ["skills"]
+}
+```
+
+All sections are optional. Plugins are discovered from `<workspace>/.komind/plugins/` and `<globalStorage>/plugins/`. Their contributions are wired in automatically:
+
+- **Skills** — loaded into the skill index (see above).
+- **MCP servers** — connected on startup, namespaced by plugin (`<plugin>-<server>`).
+- **System prompt** — appended to every session's system prompt.
+- **Slash commands** — typing `/name args` in the chat expands to the command's prompt template. `{{args}}` is replaced with what you type after the command; without a placeholder, your text is appended. The composer shows an autocomplete menu as you type `/`. Duplicate command names across plugins are namespaced (`<plugin>-<name>`).
+
+> Plugins are untrusted content, just like skills and MCP servers. Review a plugin's manifest before enabling it.
 
 ## Tool permission model
 
@@ -37,7 +127,7 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 
 ## Architecture
 
-- **Extension host** (`src/host/`): `extension.ts` (webview provider + HTML/CSP), `provider.ts` (API streaming client), `agent.ts` (agent loop, tool-call orchestration), `tools.ts` (read_file, list_dir, apply_edit, run_terminal), `approvals.ts` (approval manager with 60s timeout), `store.ts` (JSON-file session persistence).
+- **Extension host** (`src/host/`): `extension.ts` (webview provider + HTML/CSP), `provider.ts` (API streaming client), `agent.ts` (agent loop, tool-call orchestration), `tools.ts` (read_file, list_dir, apply_edit, create_file, run_terminal, run_subagents), `toolRegistry.ts` (pluggable `ToolProvider` registry aggregating built-in + external tools), `mcp.ts` (MCP client manager exposing external servers as tool providers), `subagent.ts` (parallel headless sub-agents), `approvals.ts` (approval manager with 60s timeout), `store.ts` (JSON-file session persistence).
 - **Webview** (`src/webview/`): React chat UI (`App.tsx`, `api.ts`) — streaming markdown (marked + DOMPurify), tool cards, approval buttons, session switcher.
 - **Shared** (`src/shared/`): typed `postMessage` protocol (`protocol.ts`).
 

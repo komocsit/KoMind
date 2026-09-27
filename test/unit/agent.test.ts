@@ -59,7 +59,7 @@ describe("AgentSession", () => {
     session.send("read a.txt");
     await vi.waitFor(() => expect(ui.turnComplete).toHaveBeenCalled());
     expect(ui.toolCall).toHaveBeenCalledWith("c1", "read_file", { path: "a.txt" });
-    expect(ui.toolResult).toHaveBeenCalledWith("c1", true, "content of a.txt");
+    expect(ui.toolResult).toHaveBeenCalledWith("c1", true, "content of a.txt", undefined);
     const secondCall = provider.calls[1];
     expect(JSON.stringify(secondCall)).toContain('"type":"tool_result"');
     expect(ui.textDelta).toHaveBeenCalledWith("The".slice(0, 3));

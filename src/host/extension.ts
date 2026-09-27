@@ -5,17 +5,16 @@ import { createProvider, type Provider } from "./provider";
 import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
 import { runSubagents } from "./subagent";
+import { ToolRegistry } from "./toolRegistry";
+import { McpManager, type McpServerConfig, isMcpToolName } from "./mcp";
+import { SkillManager, discoverSkills, type SkillFs, type Skill } from "./skills";
+import { CommandRegistry, loadPlugins } from "./plugins";
 import { parseImport, type ImportedConversation } from "./sessionImport";
 import { ApprovalManager } from "./approvals";
 import type { ToolContext } from "./tools";
 import { resolvePath } from "./tools";
 import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment, EditInfo } from "../shared/protocol";
 
-const TOOL_NAMES: ToolName[] = ["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents"];
-
-function toToolName(name: string): ToolName {
-  return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : "read_file";
-}
 
 const EFFORTS: Effort[] = ["low", "medium", "high", "extra", "max"];
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
@@ -41,6 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
     vscode.commands.registerCommand("koMind.resetPermissions", () => provider.resetPermissions()),
     vscode.commands.registerCommand("koMind.importSession", () => provider.importSession()),
+    { dispose: () => void provider.dispose() },
   );
 }
 
@@ -59,6 +59,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private repoContextCache: { at: number; text: string } | null = null;
   private mode: Mode = "build";
   private alwaysAllow = { terminal: false, edits: false };
+  private readonly registry = new ToolRegistry();
+  private readonly mcp = new McpManager();
+  private readonly skills = new SkillManager();
+  private readonly commands = new CommandRegistry();
+  private pluginSystemPrompts: string[] = [];
 
   constructor(private readonly context: vscode.ExtensionContext) { }
 
@@ -151,6 +156,137 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     void this.baseProvider.listModels().then((models) => {
       if (models.length > 0) { this.models = this.mergeModels(models); this.postConfig(); }
     });
+    // connect configured MCP servers in the background so startup is not blocked
+    void this.connectMcpServers();
+    // discover skills from workspace + global storage
+    void this.loadSkills();
+  }
+
+  /**
+   * Discover skills and register them with the SkillManager. Skills are read
+   * from `<workspace>/.komind/skills/` and the extension's global storage
+   * (`<globalStorage>/skills/`). Each immediate subdirectory containing a
+   * `SKILL.md` becomes one skill. Workspace skills take precedence over global
+   * ones on name collisions (first root wins).
+   */
+  /** Shared filesystem adapter over vscode.workspace.fs for skills + plugins. */
+  private skillFs(): SkillFs {
+    return {
+      async readDir(dir) {
+        const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dir));
+        return entries.map(([name, type]) => [name, type === vscode.FileType.Directory] as [string, boolean]);
+      },
+      async readFile(fp) {
+        return Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(fp))).toString("utf8");
+      },
+      async exists(fp) {
+        try { await vscode.workspace.fs.stat(vscode.Uri.file(fp)); return true; } catch { return false; }
+      },
+    };
+  }
+
+  /** Roots to scan for standalone skills (workspace first, then global). */
+  private skillRoots(): string[] {
+    const roots: string[] = [];
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (wsRoot) roots.push(path.join(wsRoot, ".komind", "skills"));
+    roots.push(path.join(this.context.globalStorageUri.fsPath, "skills"));
+    return roots;
+  }
+
+  /** Roots to scan for plugins (workspace first, then global). */
+  private pluginRoots(): string[] {
+    const roots: string[] = [];
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (wsRoot) roots.push(path.join(wsRoot, ".komind", "plugins"));
+    roots.push(path.join(this.context.globalStorageUri.fsPath, "plugins"));
+    return roots;
+  }
+
+  /**
+   * Discover plugins and standalone skills, then wire them into the app:
+   * plugin skills + standalone skills feed the SkillManager, plugin slash
+   * commands feed the CommandRegistry, plugin MCP servers are connected, and
+   * plugin system-prompt fragments are appended to every session's prompt.
+   * Plugin contributions take precedence over standalone skills on name
+   * collisions (loaded first).
+   */
+  private async loadSkills(): Promise<void> {
+    const fsAdapter = this.skillFs();
+    let pluginSkills: Skill[] = [];
+    let pluginCount = 0;
+    try {
+      const loaded = await loadPlugins(this.pluginRoots(), fsAdapter);
+      pluginSkills = loaded.skills;
+      pluginCount = loaded.plugins.length;
+      this.commands.setCommands(loaded.commands);
+      this.pluginSystemPrompts = loaded.systemPrompts;
+      this.post({ type: "commands", commands: this.commands.list().map((c) => ({ name: c.name, description: c.description, plugin: c.plugin })) });
+      // Connect plugin-contributed MCP servers alongside the settings ones.
+      for (const [name, cfg] of Object.entries(loaded.mcpServers)) {
+        const { provider } = await this.mcp.connect(name, cfg);
+        if (provider) { try { this.registry.addProvider(provider); } catch { /* dup */ } }
+      }
+      for (const e of loaded.errors) {
+        vscode.window.showWarningMessage(`KoMind: plugin "${e.name}" failed to load: ${e.error}`);
+      }
+    } catch { /* plugin loading is best-effort */ }
+
+    try {
+      const standalone = await discoverSkills(this.skillRoots(), fsAdapter);
+      // Plugin skills win on name collisions (listed first).
+      this.skills.setSkills([...pluginSkills, ...standalone]);
+    } catch {
+      this.skills.setSkills(pluginSkills);
+    }
+    this.postSkills();
+
+    const skillCount = this.skills.size;
+    const parts: string[] = [];
+    if (skillCount > 0) parts.push(`${skillCount} skill(s)`);
+    if (pluginCount > 0) parts.push(`${pluginCount} plugin(s)`);
+    if (this.commands.size > 0) parts.push(`${this.commands.size} command(s)`);
+    if (parts.length > 0) vscode.window.showInformationMessage(`KoMind: loaded ${parts.join(", ")}.`);
+  }
+
+  /**
+   * The combined system prompt: the skill index plus any plugin system-prompt
+   * fragments. Empty string when there is nothing to add.
+   */
+  private systemPrompt(): string | undefined {
+    const sections = [this.skills.indexText(), ...this.pluginSystemPrompts].filter((s) => s && s.trim());
+    return sections.length > 0 ? sections.join("\n\n") : undefined;
+  }
+
+  /**
+   * Connect all MCP servers listed in `koMind.mcpServers` and register each
+   * server's tools in the shared registry. Connections run concurrently and
+   * failures are reported but never block the others. MCP tools always route
+   * through the approval gate (see makeToolContext.requestApproval).
+   */
+  private async connectMcpServers(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("koMind");
+    const servers = cfg.get<Record<string, McpServerConfig>>("mcpServers", {}) ?? {};
+    const names = Object.keys(servers);
+    if (names.length === 0) return;
+    const results = await Promise.all(
+      names.map(async (name) => {
+        const { result, provider } = await this.mcp.connect(name, servers[name]);
+        if (provider) {
+          try { this.registry.addProvider(provider); } catch { /* already present */ }
+        }
+        return result;
+      }),
+    );
+    const ok = results.filter((r) => r.ok);
+    const failed = results.filter((r) => !r.ok && r.error !== "disabled");
+    if (ok.length > 0) {
+      const total = ok.reduce((n, r) => n + r.toolCount, 0);
+      vscode.window.showInformationMessage(`KoMind: connected ${ok.length} MCP server(s), ${total} tool(s) available.`);
+    }
+    for (const r of failed) {
+      vscode.window.showWarningMessage(`KoMind: MCP server "${r.name}" failed to connect: ${r.error}`);
+    }
   }
 
   /** union: current selection first, then extra models, then fetched — deduped */
@@ -169,13 +305,18 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return [...new Set([...fromSettings, ...saved, ...legacy].filter(Boolean))];
   }
 
+  /** Send the current skill index to the webview for the `/` suggestion menu. */
+  private postSkills() {
+    this.post({ type: "skills", skills: this.skills.list().map((sk) => ({ name: sk.name, description: sk.description })) });
+  }
+
   private postConfig() {
     this.post({ type: "config", model: this.currentModel, models: this.models, effort: this.currentEffort, mode: this.mode, alwaysAllow: this.alwaysAllow });
   }
 
   /** plan mode: sessions may only use read-only tools; build mode: all tools. */
   private applyMode() {
-    const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir"] : null;
+    const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "load_skill"] : null;
     for (const session of this.sessions.values()) session.allowedTools = allowed;
   }
 
@@ -192,13 +333,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     const secrets = this.context.secrets;
     let keyCached: string | null = null;
     const provider: Provider = {
-      async streamTurn(messages, tools, onEvent, signal) {
+      async streamTurn(messages, tools, onEvent, signal, system) {
         if (!keyCached) {
           keyCached = (await secrets.get("koMind.apiKey")) ?? null;
           if (!keyCached) throw new Error("No API key set. Run command 'KoMind: Set API Key'.");
           baseProvider.setKey(keyCached);
         }
-        return baseProvider.streamTurn(messages, tools, onEvent, signal);
+        return baseProvider.streamTurn(messages, tools, onEvent, signal, system);
       },
       setKey: (k: string) => baseProvider.setKey(k),
       setModel: (m: string) => baseProvider.setModel(m),
@@ -211,14 +352,14 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       textDelta: (t: string) => this.post({ type: "textDelta", sessionId: id, text: t }),
       thinkingDelta: (t: string) => this.post({ type: "thinkingDelta", sessionId: id, text: t }),
       toolCall: (callId: string, tool: string, input: Record<string, unknown>) =>
-        this.post({ type: "toolCall", sessionId: id, callId, tool: toToolName(tool), input }),
+        this.post({ type: "toolCall", sessionId: id, callId, tool, input }),
       toolResult: (callId: string, ok: boolean, output: string, editInfo?: EditInfo) => this.post({ type: "toolResult", sessionId: id, callId, ok, output, editInfo }),
       subagentStatus: (callId: string, agents: { name: string; status: "running" | "done" | "failed" }[]) => this.post({ type: "subagentStatus", sessionId: id, callId, agents }),
       error: (message: string) => this.post({ type: "error", sessionId: id, message }),
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
       turnStopped: () => this.post({ type: "turnStopped", sessionId: id }),
     };
-    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(provider), store: this.store, ui, initialMessages });
+    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(provider), store: this.store, ui, initialMessages, registry: this.registry, system: () => this.systemPrompt() });
   }
 
   private makeToolContext(provider?: Provider): ToolContext {
@@ -288,6 +429,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       },
       requestApproval: (command, callId, tool, signal) => {
+        // MCP (external) tools are always gated — no always-allow bypass.
+        if (tool && isMcpToolName(tool)) {
+          return this.approvals.request(this.currentSessionId ?? "", callId, command, tool, signal);
+        }
         // persistent "always allow" grants bypass the approval card
         if (tool === "run_terminal" && this.alwaysAllow.terminal) return Promise.resolve(true);
         if ((tool === "apply_edit" || tool === "create_file") && this.alwaysAllow.edits) return Promise.resolve(true);
@@ -299,10 +444,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       // never receive a runSubagents context, so nesting is impossible.
       runSubagents: provider
         ? (tasks, signal, onStatus) => {
-          const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir"] : null;
-          return runSubagents(tasks, { provider, ctx: this.makeToolContext(), allowedTools: allowed, onStatus }, signal);
+          const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "load_skill"] : null;
+          return runSubagents(tasks, { provider, ctx: this.makeToolContext(), allowedTools: allowed, onStatus, registry: this.registry }, signal);
         }
         : undefined,
+      // Skills are available to top-level sessions and sub-agents alike so
+      // either can pull in a skill's full instructions on demand.
+      loadSkill: (name: string) => this.skills.body(name),
       workspaceRoot: root,
       autoApproveEdits: cfg.get("autoApproveEdits", true),
       autoApproveTerminal: cfg.get("autoApproveTerminal", false),
@@ -316,6 +464,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!session) break;
         let modelText = m.text;
         let displayText = m.text;
+        // Slash commands (/name args) expand to their prompt template for the
+        // model while the chat still shows what the user typed.
+        const expanded = this.commands.expand(m.text);
+        if (expanded !== undefined) modelText = expanded;
         // attachments → appended as fenced blocks for the model, chips noted in display text
         if (m.attachments && m.attachments.length > 0) {
           const blocks = m.attachments
@@ -412,6 +564,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "requestConfig": this.postConfig(); break;
+      case "requestCommands": {
+        this.post({ type: "commands", commands: this.commands.list().map((c) => ({ name: c.name, description: c.description, plugin: c.plugin })) });
+        break;
+      }
+      case "requestSkills": this.postSkills(); break;
       case "setModel": {
         this.currentModel = m.model;
         this.baseProvider.setModel(m.model);
@@ -767,6 +924,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 <div id="splash" role="status" aria-label="Loading KoMind"><img src="${logo}" alt="KoMind logo" /><span>Loading KoMind…</span></div>
 <div id="root"></div>
 <script type="module" src="${js}"></script></body></html>`;
+  }
+
+  /** Disconnect all MCP servers when the extension is torn down. */
+  async dispose(): Promise<void> {
+    await this.mcp.disconnectAll();
   }
 }
 

@@ -19,6 +19,7 @@ describe("protocol types", () => {
       { type: "attachments", files: [{ name: "b.txt", content: "y", truncated: true }], images: [{ name: "photo.png", mediaType: "image/png", data: "aW1hZ2U=" }], warning: "one skipped" },
       { type: "attachmentError", message: "unsupported" },
       { type: "contextEnabled", enabled: true },
+      { type: "commands", commands: [{ name: "review", description: "Review code", plugin: "quality" }] },
       { type: "sessionList", sessions: [{ id: "s1", firstUserMessage: "hello", ts: 1, archived: false }] },
     ];
     const webview: WebviewToHostMsg[] = [
@@ -31,6 +32,7 @@ describe("protocol types", () => {
       { type: "stop", sessionId: "s1" },
       { type: "retry", sessionId: "s1" },
       { type: "requestConfig" },
+      { type: "requestCommands" },
       { type: "deleteSession", sessionId: "s1" },
       { type: "setSessionArchived", sessionId: "s1", archived: true },
       { type: "setModel", model: "gpt-5.6-sol" },

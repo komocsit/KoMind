@@ -1,11 +1,11 @@
-import type { HostToWebviewMsg, ToolName } from "../shared/protocol";
+import type { HostToWebviewMsg, ToolId } from "../shared/protocol";
 
 export class ApprovalManager {
-  private pending = new Map<string, { resolve: (ok: boolean) => void; timer: NodeJS.Timeout; tool: ToolName }>();
+  private pending = new Map<string, { resolve: (ok: boolean) => void; timer: NodeJS.Timeout; tool: ToolId }>();
 
   constructor(private readonly post: (msg: HostToWebviewMsg) => void) { }
 
-  request(sessionId: string, callId: string, command: string, tool: ToolName, signal?: AbortSignal): Promise<boolean> {
+  request(sessionId: string, callId: string, command: string, tool: ToolId, signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false);
     this.post({ type: "approvalRequest", sessionId, callId, command, tool });
     return new Promise<boolean>((resolve) => {
@@ -25,7 +25,7 @@ export class ApprovalManager {
   }
 
   /** Which tool a pending approval belongs to (for "always allow" grants). */
-  toolOf(callId: string): ToolName | undefined {
+  toolOf(callId: string): ToolId | undefined {
     return this.pending.get(callId)?.tool;
   }
 
