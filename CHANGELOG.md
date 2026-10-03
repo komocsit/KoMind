@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
 - Redesigned the chat as a timeline: each agent step (reply, thought, tool call, error) is a status dot on a vertical rail (green done, red failed, amber awaiting approval, pulsing while running). Tool steps read like `Edit src/app.ts` with a one-line outcome ("Added 2 lines", "Modified · +3 −1", "12 matches"); file paths open the file. Diffs show inline and collapse long changes behind "Click to expand"; terminal steps show IN/OUT blocks; reasoning is a compact "Thought for Ns" row. The composer is a single rounded input with attach, mic and send inside.
 

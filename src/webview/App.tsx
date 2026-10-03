@@ -402,7 +402,7 @@ const CSS = `
 
   /* KoMind-branded loading state */
   .komind-loading { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 2px; opacity: 0.85; }
-  .komind-loading img { position: absolute; top: 0; left: 0; width: 28px; height: 28px; object-fit: contain; animation: km-sweep-lr 1.8s ease-in-out infinite, km-brand-pulse 1.2s ease-in-out infinite; will-change: left; }
+  .komind-loading img { position: absolute; top: 0; left: 0; width: 28px; height: 28px; object-fit: contain; animation: km-sweep-lr 2.4s ease-in-out infinite, km-brand-pulse 1.6s ease-in-out infinite; will-change: left; }
   .komind-loading .km-sweep-track { position: relative; width: 100%; height: 28px; overflow: hidden; }
   @keyframes km-sweep-lr { from { left: 0; transform: translateX(0); } to { left: 100%; transform: translateX(-100%); } }
   .komind-loading span {
