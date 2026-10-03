@@ -44,6 +44,10 @@
       {
         "command": "koMind.importSession",
         "title": "KoMind: Import Chat from Another AI Provider"
+      },
+      {
+        "command": "koMind.setVoiceApiKey",
+        "title": "KoMind: Set Voice Input API Key"
       }
     ],
     "configuration": {
@@ -55,7 +59,7 @@
         },
         "koMind.model": {
           "type": "string",
-          "default": "gpt-5.6-sol"
+          "default": "claude-opus-4-8"
         },
         "koMind.models": {
           "type": "array",
@@ -89,6 +93,21 @@
         "koMind.autoApproveTerminal": {
           "type": "boolean",
           "default": false
+        },
+        "koMind.voice.transcriptionUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Speech-to-text endpoint for voice input (OpenAI-style `audio/transcriptions`). Azure AI Foundry / Azure OpenAI example: `https://<resource>.openai.azure.com/openai/deployments/<whisper-or-gpt-4o-transcribe-deployment>/audio/transcriptions?api-version=2025-03-01-preview`. Set the key with **KoMind: Set Voice Input API Key**. Windows records with no extra installs; macOS/Linux need `ffmpeg` on PATH."
+        },
+        "koMind.voice.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional `model` sent with voice transcriptions. Leave empty for Azure deployment URLs; use e.g. `whisper-1` for OpenAI or the deployment name for Azure `/openai/v1/` URLs."
+        },
+        "koMind.voice.language": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional spoken-language hint for voice input as an ISO-639-1 code (e.g. `en`). Empty = auto-detect."
         },
         "koMind.mcpServers": {
           "type": "object",

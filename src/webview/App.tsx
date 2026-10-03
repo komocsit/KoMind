@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { send, onHostMessage } from "./api";
-import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView, EditInfo, SlashCommandView, SkillView } from "../shared/protocol";
+import type { HostToWebviewMsg, SessionEvent, ToolName, Effort, Mode, FileAttachment, ImageAttachment, SubagentStatusView, EditInfo, SlashCommandView, SkillView, VoiceState } from "../shared/protocol";
 import logoUrl from "../../media/komind-logo.png";
 
 const DISPLAY_NAME = __KOMIND_DISPLAY_NAME__;
@@ -185,7 +185,7 @@ const CSS = `
   .settings-body { padding: 10px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field > label { font-size: 11.5px; font-weight: 600; opacity: 0.85; }
-  .field input[type="text"], .field input:not([type]), .field input[type="number"] {
+  .field input[type="text"], .field input:not([type]), .field input[type="number"], .field input[type="password"] {
     font-family: inherit; font-size: 12.5px;
     color: var(--vscode-inputForeground);
     background: var(--vscode-inputBackground);
@@ -195,7 +195,14 @@ const CSS = `
   }
   .field input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .field .row { display: flex; align-items: center; gap: 8px; }
-  .apikey-status { font-size: 12px; opacity: 0.85; flex: 1; }
+  .settings-section { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--vscode-panel-border); font-size: 12px; font-weight: 700; }
+  .field.voice-pair { flex-direction: row; gap: 8px; }
+  .field.voice-pair > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .field.voice-pair label { font-size: 11.5px; font-weight: 600; opacity: 0.85; }
+  .field.voice-pair input { width: 100%; box-sizing: border-box; }
+  .apikey-status { font-size: 11px; font-weight: 500; opacity: 0.85; }
+  .key-input { display: flex; align-items: center; gap: 4px; }
+  .key-input input { flex: 1; min-width: 0; font-family: var(--vscode-editor-font-family, monospace); }
   .apikey-status.ok { color: var(--km-accent); }
   .apikey-status.none { color: var(--vscode-errorForeground); }
   .check-row { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
@@ -359,7 +366,9 @@ const CSS = `
   .user-images img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: var(--km-radius-sm); }
 
   /* Assistant markdown */
-  .assistant { margin: 10px 0; line-height: 1.55; }
+  .assistant { line-height: 1.55; }
+  .assistant .md > :first-child { margin-top: 0; }
+  .assistant .md > :last-child { margin-bottom: 0; }
   .md p { margin: 6px 0; }
   .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.3; }
   .md h1 { font-size: 16px; } .md h2 { font-size: 15px; } .md h3 { font-size: 14px; } .md h4 { font-size: 13px; }
@@ -415,80 +424,88 @@ const CSS = `
     50% { transform: scale(1); opacity: 1; }
   }
 
-  /* Thinking card — shows the model's live reasoning */
-  .thinking-card {
-    border: 1px solid var(--vscode-panel-border);
-    border-left: 2px solid color-mix(in srgb, var(--km-primary) 60%, var(--vscode-panel-border));
-    border-radius: var(--km-radius);
-    margin: 8px 0; overflow: hidden;
-    background: color-mix(in srgb, var(--vscode-inputBackground) 40%, transparent);
+  /* Timeline — every agent step (reply, thought, tool, error) is a dot on a
+     vertical rail. Dot color = status: ok / err / wait / run (pulsing) / muted. */
+  .step { position: relative; padding: 0 0 14px 22px; min-width: 0; }
+  .step::before {
+    content: ""; position: absolute; left: 3px; top: 6px; z-index: 1;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--km-dot, var(--vscode-descriptionForeground, #888));
+    box-shadow: 0 0 0 3px var(--vscode-sideBar-background);
   }
-  .thinking-head {
-    display: flex; width: 100%; align-items: center; gap: 8px;
-    min-height: 32px; padding: 6px 10px;
-    color: var(--vscode-foreground); background: transparent;
-    border: none; border-radius: 0;
-    font-size: 12px; text-align: left;
+  .step::after {
+    content: ""; position: absolute; left: 6.5px; top: 0; bottom: 0; width: 1px;
+    background: color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
   }
-  .thinking-head:hover { background: var(--vscode-list-hoverBackground); }
-  .thinking-title { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
-  .thinking-title img { width: 15px; height: 15px; object-fit: contain; }
-  .thinking-title img.spin-pulse { animation: km-brand-pulse 1.2s ease-in-out infinite; }
-  .thinking-meta { margin-left: auto; font-size: 11px; opacity: 0.7; }
-  .thinking-chevron { display: inline-flex; flex: none; opacity: 0.65; transition: transform var(--km-transition); }
-  .thinking-chevron.expanded { transform: rotate(180deg); }
+  /* the rail starts at the first dot of a run of steps and ends at the last one */
+  .step:not(.step + .step)::after { top: 10px; }
+  .step:not(:has(+ .step))::after { bottom: calc(100% - 10px); }
+  .step:not(.step + .step):not(:has(+ .step))::after { display: none; }
+  .step.ok { --km-dot: var(--km-accent); }
+  .step.err { --km-dot: var(--vscode-errorForeground); }
+  .step.wait { --km-dot: var(--km-warn); }
+  .step.run { --km-dot: var(--km-primary); }
+  .step.run::before { animation: km-dot-pulse 1.2s ease-in-out infinite; }
+  .step.muted { --km-dot: color-mix(in srgb, var(--vscode-foreground) 35%, transparent); }
+  @keyframes km-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @media (prefers-reduced-motion: reduce) { .step.run::before { animation: none; } }
+
+  .step-head { display: flex; align-items: baseline; gap: 7px; min-height: 20px; min-width: 0; font-size: 12.5px; }
+  .step-verb { font-weight: 700; flex: none; }
+  .step-target {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  }
+  button.step-target {
+    border: none; background: none; padding: 0; min-height: 0; display: inline;
+    color: var(--vscode-textLink-foreground); cursor: pointer; text-align: left;
+  }
+  button.step-target:hover { background: none; text-decoration: underline; }
+  .step-tail { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; flex: none; }
+  .step-time { font-size: 10px; opacity: 0.45; font-family: var(--vscode-editor-font-family, monospace); }
+  .step-tail .icon-btn { border: none; background: none; min-height: 20px; padding: 1px 4px; opacity: 0.6; }
+  .step-tail .icon-btn:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+  .chev { display: inline-flex; transition: transform var(--km-transition); }
+  .chev.open { transform: rotate(180deg); }
+  .step-sub { font-size: 11.5px; margin-top: 1px; color: var(--vscode-descriptionForeground, var(--vscode-foreground)); opacity: 0.85; }
+  .step-sub.err { color: var(--vscode-errorForeground); opacity: 1; }
+  .step-sub .add { color: var(--km-accent); }
+  .step-sub .del { color: var(--vscode-errorForeground); }
+  .step-body { margin-top: 6px; }
+
+  /* Thought row — plain muted line, reasoning shown indented on click */
+  button.step-thought {
+    border: none; background: none; padding: 0; min-height: 20px;
+    font-size: 12.5px; color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  }
+  button.step-thought:hover { background: none; color: var(--vscode-foreground); }
   .thinking-body {
-    padding: 4px 12px 10px;
+    margin-top: 4px; padding: 2px 0 2px 10px;
+    border-left: 2px solid var(--vscode-panel-border);
     font-size: 12px; line-height: 1.55; font-style: italic;
     color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-    opacity: 0.9;
     white-space: pre-wrap; word-break: break-word;
     max-height: 320px; overflow-y: auto;
   }
 
-  /* Tool card */
-  .tool-card {
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: var(--km-radius);
-    margin: 8px 0; overflow: hidden;
-    background: color-mix(in srgb, var(--vscode-inputBackground) 55%, transparent);
-    transition: border-color var(--km-transition);
+  /* Terminal step — IN (command) / OUT (output) block */
+  .io-block {
+    border: 1px solid var(--vscode-panel-border); border-radius: var(--km-radius-sm);
+    background: var(--vscode-textCodeBlock-background);
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.5;
+    overflow: hidden;
   }
-  .tool-card.running { border-color: color-mix(in srgb, var(--vscode-focusBorder) 50%, var(--vscode-panel-border)); }
-  .tool-card.awaiting { border-color: color-mix(in srgb, var(--km-warn) 55%, var(--vscode-panel-border)); }
-  .tool-card.done-ok { border-color: color-mix(in srgb, var(--km-accent) 40%, var(--vscode-panel-border)); }
-  .tool-card.done-err { border-color: color-mix(in srgb, var(--vscode-errorForeground) 45%, var(--vscode-panel-border)); }
-  .tool-head {
-    display: flex; width: 100%; align-items: center; gap: 8px;
-    min-height: 34px; padding: 6px 10px;
-    color: var(--vscode-foreground); background: transparent;
-    border: none; border-radius: 0;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 12px; text-align: left;
-  }
-  .tool-head:hover { background: var(--vscode-list-hoverBackground); }
-  .tool-name { font-weight: 600; }
-  .tool-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; opacity: 0.9; }
-  .tool-status svg { flex: none; }
-  .tool-chevron { display: inline-flex; flex: none; opacity: 0.65; transition: transform var(--km-transition); }
-  .tool-chevron.expanded { transform: rotate(180deg); }
+  .io-row { display: grid; grid-template-columns: 38px 1fr; }
+  .io-row + .io-row { border-top: 1px solid var(--vscode-panel-border); }
+  .io-label { padding: 6px 0 6px 8px; font-size: 10px; font-weight: 700; letter-spacing: .5px; opacity: .5; }
+  .io-text { margin: 0; padding: 6px 10px 6px 0; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto; font: inherit; }
+
   .spin { animation: km-spin 1s linear infinite; }
   @keyframes km-spin { to { transform: rotate(360deg); } }
-  .tool-body { padding: 0 10px 8px; }
-  .tool-summary {
-    padding: 0 10px 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 11.5px;
-    line-height: 1.4;
-    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-    opacity: 0.75;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  /* Sub-agent roster — one row per parallel agent with its pet icon + status */
-  .subagents { padding: 2px 10px 8px; display: flex; flex-direction: column; gap: 4px; }
+  /* Sub-agent roster — one row per parallel agent with its agent icon + status */
+  .subagents { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
   .subagent-row {
     display: flex; align-items: center; gap: 8px;
     padding: 5px 8px; min-height: 30px;
@@ -511,6 +528,8 @@ const CSS = `
   .subagent-row.failed .subagent-pet { background: color-mix(in srgb, var(--vscode-errorForeground) 14%, transparent); color: var(--vscode-errorForeground); }
   .subagent-pet.working svg { animation: km-pet-bounce 1s ease-in-out infinite; }
   @keyframes km-pet-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+  .subagent-row.orchestrator { border-style: dashed; }
+  .subagent-row:not(.orchestrator) { margin-left: 14px; }
   .subagent-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .subagent-kind { font-size: 10.5px; opacity: 0.55; }
   .subagent-state { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
@@ -518,9 +537,6 @@ const CSS = `
   .subagent-state.running { color: var(--vscode-foreground); opacity: 0.85; }
   .subagent-state.done { color: var(--km-accent); }
   .subagent-state.failed { color: var(--vscode-errorForeground); }
-  .tool-args { font-size: 11px; opacity: 0.65; margin-top: -2px; margin-bottom: 4px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmd-block {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 12px;
@@ -548,59 +564,58 @@ const CSS = `
   .mode-toggle button.active { background: var(--km-primary); color: #fff; opacity: 1; }
   .mode-toggle button.active.plan { background: var(--km-warn); color: var(--vscode-sideBar-background, #1e1e1e); }
   .tool-output {
-    margin: 6px 0 0;
+    margin: 0;
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11.5px;
     line-height: 1.5;
-    white-space: pre-wrap;
+    white-space: pre-wrap; word-break: break-word;
     max-height: 220px; overflow-y: auto;
     background: var(--vscode-textCodeBlock-background);
+    border: 1px solid var(--vscode-panel-border);
     border-radius: var(--km-radius-sm);
     padding: 8px 10px;
   }
 
-  /* File-edit diff — rendered inside apply_edit/create_file tool cards */
-  .diff-stat { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; font-size: 11px; }
-  .diff-stat .add { color: var(--km-accent); font-weight: 700; }
-  .diff-stat .del { color: var(--vscode-errorForeground); font-weight: 700; }
-  .diff-actions { display: flex; gap: 6px; padding: 2px 10px 6px; }
-  .diff-actions button { font-size: 11px; min-height: 24px; padding: 3px 8px; }
+  /* File-edit diff — shown inline under Edit/Write steps, collapsed to a few lines */
   .diff-block {
-    margin: 4px 10px 8px;
+    position: relative;
     border: 1px solid var(--vscode-panel-border);
     border-radius: var(--km-radius-sm);
     overflow: auto;
-    max-height: 320px;
+    max-height: 420px;
     background: var(--vscode-textCodeBlock-background);
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11.5px;
     line-height: 1.5;
+  }
+  .diff-block.collapsed { max-height: 126px; overflow: hidden; cursor: pointer; }
+  .diff-expand {
+    position: absolute; right: 8px; bottom: 8px;
+    font-family: var(--vscode-font-family); font-size: 11px;
+    padding: 3px 9px; border-radius: var(--km-radius-sm);
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+    border: 1px solid var(--vscode-panel-border);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
+    pointer-events: none;
   }
   .diff-line { display: flex; white-space: pre; }
   .diff-line .ln {
     flex: none; width: 34px; text-align: right; padding: 0 6px 0 4px;
     opacity: 0.4; user-select: none;
-    border-right: 1px solid var(--vscode-panel-border);
   }
-  .diff-line .mark { flex: none; width: 16px; text-align: center; opacity: 0.7; }
+  .diff-line .mark { flex: none; width: 14px; text-align: center; opacity: 0.8; user-select: none; }
   .diff-line .txt { flex: 1; padding-right: 8px; white-space: pre-wrap; word-break: break-word; }
-  .diff-line.add { background: color-mix(in srgb, var(--km-accent) 14%, transparent); }
+  .diff-line.add { background: color-mix(in srgb, var(--km-accent) 18%, transparent); }
   .diff-line.add .mark { color: var(--km-accent); }
-  .diff-line.del { background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent); }
+  .diff-line.del { background: color-mix(in srgb, var(--vscode-errorForeground) 18%, transparent); }
   .diff-line.del .mark { color: var(--vscode-errorForeground); }
   .diff-line.gap { opacity: 0.45; justify-content: center; }
   .diff-line.gap .txt { text-align: center; padding: 0; }
 
-  /* Error card */
-  .error-card {    display: flex; align-items: flex-start; gap: 8px;
-    border: 1px solid var(--vscode-errorForeground);
-    border-radius: var(--km-radius);
-    background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
-    color: var(--vscode-errorForeground);
-    padding: 8px 10px; margin: 8px 0;
-    font-size: 12px;
-  }
+  /* Error step */
+  .error-card { display: flex; align-items: flex-start; gap: 8px; color: var(--vscode-errorForeground); font-size: 12px; }
   .error-card .msg { flex: 1; word-break: break-word; }
+  .error-card button { flex: none; }
 
   /* Step timestamp — small, subtle label shown on each step */
   .step-ts {
@@ -631,23 +646,41 @@ const CSS = `
   /* Composer */
   .composer { flex: none; padding: 8px 10px 10px; border-top: 1px solid var(--vscode-panel-border); }
   .composer-row { display: flex; gap: 6px; align-items: flex-end; }
-  .composer textarea {
-    flex: 1; resize: none;
-    font-family: inherit; font-size: 13px; line-height: 1.5;
-    color: var(--vscode-inputForeground);
+  /* One rounded input box holding attach, text, mic and send — like an editor chat input */
+  .input-shell {
+    flex: 1; min-width: 0;
+    display: flex; align-items: flex-end; gap: 2px;
+    padding: 4px;
     background: var(--vscode-inputBackground);
     border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-    border-radius: var(--km-radius);
-    padding: 8px 10px;
+    border-radius: 10px;
     transition: border-color var(--km-transition);
   }
-  .composer textarea:focus { border-color: var(--vscode-focusBorder); }
+  .input-shell:focus-within { border-color: var(--vscode-focusBorder); }
+  .composer textarea {
+    flex: 1; min-width: 0; resize: none;
+    font-family: inherit; font-size: 13px; line-height: 1.5;
+    color: var(--vscode-inputForeground);
+    background: transparent;
+    border: none; outline: none;
+    padding: 5px 4px;
+    max-height: 200px;
+  }
+  .composer textarea:focus-visible { outline: none; }
   .composer textarea::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.8; }
+  .input-shell .attach-trigger, .input-shell .voice-btn, .input-shell .voice-cancel {
+    background: transparent; border-color: transparent;
+    min-height: 30px; min-width: 30px; padding: 4px 6px; justify-content: center;
+    opacity: 0.75;
+  }
+  .input-shell .attach-trigger:hover, .input-shell .voice-btn:hover:not(:disabled), .input-shell .voice-cancel:hover {
+    opacity: 1; background: var(--vscode-list-hoverBackground);
+  }
   .composer .send-btn {
-    min-height: 34px; min-width: 38px; justify-content: center;
+    min-height: 30px; min-width: 32px; padding: 4px 8px; justify-content: center;
     background: var(--km-primary);
     color: #fff;
-    border-color: transparent; border-radius: var(--km-radius);
+    border-color: transparent; border-radius: 8px;
   }
   .composer .send-btn:hover { background: color-mix(in srgb, var(--km-primary) 85%, #000); }
   .composer .send-btn.stop {
@@ -656,6 +689,23 @@ const CSS = `
   }
   .composer .send-btn.stop:hover { opacity: 0.85; }
   .stop-square { width: 10px; height: 10px; border-radius: 1px; background: currentColor; }
+  /* Voice input: mic → pulsing red timer while recording → spinner while transcribing */
+  .voice-wrap { display: flex; align-items: center; gap: 2px; flex: none; }
+  .composer .voice-btn {
+    gap: 5px; border-radius: 8px;
+    font-variant-numeric: tabular-nums; font-size: 11.5px;
+  }
+  .composer .voice-btn.starting { animation: km-voice-pulse 1s ease-in-out infinite; }
+  .input-shell .voice-btn.recording {
+    background: color-mix(in srgb, var(--vscode-errorForeground) 16%, transparent);
+    border-color: var(--vscode-errorForeground);
+    color: var(--vscode-errorForeground);
+    min-width: 58px; opacity: 1;
+  }
+  .voice-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: km-voice-pulse 1.2s ease-in-out infinite; }
+  .voice-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; }
+  @keyframes km-voice-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .voice-dot, .composer .voice-btn.starting { animation: none; } }
   .composer .hint { margin-top: 5px; font-size: 10.5px; opacity: 0.55; text-align: center; }
   /* Slash-command autocomplete popup above the composer */
   .slash-menu { position: absolute; left: 10px; right: 10px; bottom: 100%; margin-bottom: 6px; z-index: 70;
@@ -707,49 +757,60 @@ const IconSparkMini = () => (
   </svg>
 );
 const IconFileChip = () => (<svg {...iconProps} width={11} height={11}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
+const IconEye = () => (<svg {...iconProps} width={14} height={14}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>);
+const IconEyeOff = () => (<svg {...iconProps} width={14} height={14}><path d="M17.9 17.9A10.4 10.4 0 0112 20c-7 0-11-8-11-8a19.8 19.8 0 015.1-5.9M9.9 4.2A9.6 9.6 0 0112 4c7 0 11 8 11 8a19.9 19.9 0 01-2.2 3.3" /><path d="M14.1 14.1a3 3 0 01-4.2-4.2" /><path d="M1 1l22 22" /></svg>);
+const IconMic = () => (<svg {...iconProps} width={15} height={15}><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0014 0v-1" /><path d="M12 18v4M8 22h8" /></svg>);
 const IconSend = () => (<svg {...iconProps} width={15} height={15}><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>);
 const IconCheck = () => (<svg {...iconProps} width={13} height={13}><path d="M20 6L9 17l-5-5" /></svg>);
 const IconX = () => (<svg {...iconProps} width={13} height={13}><path d="M18 6L6 18M6 6l12 12" /></svg>);
 const IconClock = () => (<svg {...iconProps} width={13} height={13}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>);
-const IconAlert = () => (<svg {...iconProps} width={15} height={15}><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /><path d="M12 9v4M12 17h.01" /></svg>);
-const IconFile = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /></svg>);
-const IconFolder = () => (<svg {...iconProps} width={13} height={13}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>);
-const IconPencil = () => (<svg {...iconProps} width={13} height={13}><path d="M17 3a2.8 2.8 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>);
-const IconFilePlus = () => (<svg {...iconProps} width={13} height={13}><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /><path d="M12 12v6M9 15h6" /></svg>);
-const IconOpen = () => (<svg {...iconProps} width={13} height={13}><path d="M15 3h6v6" /><path d="M10 14L21 3" /><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /></svg>);
 const IconDiff = () => (<svg {...iconProps} width={13} height={13}><path d="M12 3v6M9 6h6" /><path d="M9 18h6" /><path d="M5 21h14a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2z" /></svg>);
-const IconTerminal = () => (<svg {...iconProps} width={13} height={13}><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>);
 const IconRotate = () => (<svg {...iconProps} width={13} height={13}><path d="M1 4v6h6" /><path d="M3.5 15a9 9 0 102.1-9.4L1 10" /></svg>);
 const IconHelp = () => (<svg {...iconProps} width={14} height={14}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 015.8 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>);
 
-/* ---------- Pet icons for sub-agents ----------
-   Each spawned sub-agent gets its own animal so it is easy to tell them apart
-   at a glance. Icons are simple inline SVGs that inherit currentColor. */
-const petProps = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+/* ---------- Agent avatars for sub-agents ----------
+   Each spawned sub-agent gets an agent icon and a virus codename so parallel
+   agents are easy to tell apart. Icons are inline SVGs using currentColor. */
+const agentProps = { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
 
-const PetCat = () => (<svg {...petProps}><path d="M4 5l2.5 3.5M20 5l-2.5 3.5" /><path d="M4 5v6a8 8 0 0016 0V5" /><path d="M9 13h.01M15 13h.01" /><path d="M12 15v1.5M10.5 16.5h3" /><path d="M8 18l-2 1M16 18l2 1" /></svg>);
-const PetDog = () => (<svg {...petProps}><path d="M5 7c0-2 1-3 2-3s2 1 2 3M15 7c0-2 1-3 2-3s2 1 2 3" /><path d="M6 7c-1 1-2 3-2 6a8 8 0 0016 0c0-3-1-5-2-6" /><path d="M9 13h.01M15 13h.01" /><path d="M12 15c-1 0-1.5.7-1.5 1.2S11 17 12 17s1.5-.3 1.5-.8S13 15 12 15z" /></svg>);
-const PetRabbit = () => (<svg {...petProps}><path d="M8 9C7 6 6.5 3 8 3s2 3 2 6M16 9c1-3 1.5-6 0-6s-2 3-2 6" /><circle cx="12" cy="15" r="5" /><path d="M10 15h.01M14 15h.01" /><path d="M11.5 17.5h1" /></svg>);
-const PetFox = () => (<svg {...petProps}><path d="M3 5l5 4M21 5l-5 4" /><path d="M8 9l4 3 4-3 1 5-5 5-5-5 1-5z" /><path d="M10.5 13h.01M13.5 13h.01" /><path d="M12 15v1" /></svg>);
-const PetBear = () => (<svg {...petProps}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="12" cy="13" r="6" /><path d="M10 13h.01M14 13h.01" /><circle cx="12" cy="16" r="1.2" /></svg>);
-const PetPanda = () => (<svg {...petProps}><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="13" r="6.2" /><path d="M9 12.5c0-1 .7-1.5 1.5-1.5M15 12.5c0-1-.7-1.5-1.5-1.5" /><circle cx="12" cy="16" r="1" /></svg>);
-const PetOwl = () => (<svg {...petProps}><path d="M12 3c-4 0-7 3-7 8s3 10 7 10 7-5 7-10-3-8-7-8z" /><circle cx="9" cy="10" r="2" /><circle cx="15" cy="10" r="2" /><path d="M12 12l-1.5 2h3L12 12z" /></svg>);
-const PetFrog = () => (<svg {...petProps}><circle cx="7.5" cy="7" r="2.5" /><circle cx="16.5" cy="7" r="2.5" /><path d="M4 12a8 8 0 0016 0" /><path d="M4 12h16" /><path d="M7.5 7h.01M16.5 7h.01" /></svg>);
-const PetPenguin = () => (<svg {...petProps}><path d="M12 3c-3 0-5 2.5-5 7v6a5 5 0 0010 0v-6c0-4.5-2-7-5-7z" /><path d="M12 8c-1.5 0-2.5 1.5-2.5 4s1 5 2.5 5 2.5-2.5 2.5-5-1-4-2.5-4z" /><path d="M10.5 6h.01M13.5 6h.01" /><path d="M12 10l-1 1.5h2L12 10z" /></svg>);
-const PetTurtle = () => (<svg {...petProps}><circle cx="12" cy="12" r="5" /><path d="M12 7v10M7 12h10M8.5 8.5l7 7M15.5 8.5l-7 7" /><path d="M4 12h-1M20 12h1M6 17l-1 1M18 17l1 1" /></svg>);
+const AgentBot = () => (<svg {...agentProps}><rect x="4" y="8" width="16" height="12" rx="3" /><path d="M12 4v4M12 4h.01" /><path d="M9 13h.01M15 13h.01" /><path d="M9.5 17h5" /><path d="M2 13v3M22 13v3" /></svg>);
+const AgentCpu = () => (<svg {...agentProps}><rect x="6" y="6" width="12" height="12" rx="2" /><rect x="9.5" y="9.5" width="5" height="5" rx="1" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></svg>);
+const AgentSparkles = () => (<svg {...agentProps}><path d="M10 3l1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8z" /><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z" /></svg>);
+const AgentNetwork = () => (<svg {...agentProps}><circle cx="12" cy="5" r="2.2" /><circle cx="5" cy="18" r="2.2" /><circle cx="19" cy="18" r="2.2" /><circle cx="12" cy="13" r="1.6" /><path d="M12 7.2v4.2M10.7 14l-4 2.6M13.3 14l4 2.6" /></svg>);
+const AgentBrain = () => (<svg {...agentProps}><path d="M12 5a3 3 0 00-5.8-1A3 3 0 004 8.5 3.5 3.5 0 004.5 15 3.5 3.5 0 0012 18z" /><path d="M12 5a3 3 0 015.8-1A3 3 0 0120 8.5a3.5 3.5 0 01-.5 6.5A3.5 3.5 0 0112 18z" /><path d="M12 5v13M8 10h1.5M14.5 10H16M8.5 14H10M14 14h1.5" /></svg>);
+const AgentRadar = () => (<svg {...agentProps}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><path d="M12 12l6-6" /><circle cx="15.5" cy="9" r=".8" /></svg>);
+const AgentAtom = () => (<svg {...agentProps}><circle cx="12" cy="12" r="1.5" /><ellipse cx="12" cy="12" rx="9.5" ry="4" /><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="9.5" ry="4" transform="rotate(120 12 12)" /></svg>);
+const AgentWorkflow = () => (<svg {...agentProps}><rect x="3" y="3" width="7" height="6" rx="1.5" /><rect x="14" y="15" width="7" height="6" rx="1.5" /><path d="M6.5 9v3.5a2 2 0 002 2h9V15" /><path d="M15.5 12.5l2 2-2 2" /></svg>);
 
-const PET_ICONS: (() => JSX.Element)[] = [PetCat, PetDog, PetRabbit, PetFox, PetBear, PetPanda, PetOwl, PetFrog, PetPenguin, PetTurtle];
-const PET_LABELS = ["Cat", "Dog", "Rabbit", "Fox", "Bear", "Panda", "Owl", "Frog", "Penguin", "Turtle"];
+const AGENT_ICONS: (() => JSX.Element)[] = [AgentBot, AgentCpu, AgentSparkles, AgentNetwork, AgentBrain, AgentRadar, AgentAtom, AgentWorkflow];
+/* Greek codenames per task type, each matching the role's myth
+   (Athena plans, Argus watches, Ariadne follows the thread, …). */
+const AGENT_CODENAMES: Record<string, string[]> = {
+  general: ["Hephaestus", "Prometheus", "Talos"],
+  explore: ["Artemis", "Odysseus", "Iris"],
+  plan: ["Athena", "Metis", "Daedalus"],
+  review: ["Argus", "Themis", "Apollo"],
+  test: ["Nemesis", "Ares", "Achilles"],
+  debug: ["Ariadne", "Asclepius", "Theseus"],
+  docs: ["Calliope", "Clio", "Homer"],
+};
+const AGENT_TYPE_LABEL: Record<string, string> = { general: "Builder", explore: "Explorer", plan: "Planner", review: "Reviewer", test: "Tester", debug: "Debugger", docs: "Docs" };
 
-/* Deterministically map a sub-agent's name to one of the pet icons so the same
-   agent always shows the same animal within a session. */
-function petIndex(name: string): number {
+/* The nth sub-agent of a type in one call gets the nth name of that type's pool. */
+function agentCodename(type: string | undefined, nth: number): string {
+  const pool = AGENT_CODENAMES[type ?? "general"] ?? AGENT_CODENAMES.general;
+  const round = Math.floor(nth / pool.length);
+  return pool[nth % pool.length] + (round > 0 ? ` ${round + 1}` : "");
+}
+
+/* Deterministically hash a sub-agent's name so the same agent always gets the same icon. */
+function agentHash(name: string): number {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return hash % PET_ICONS.length;
+  return hash;
 }
-function PetIcon({ name }: { name: string }) {
-  const Icon = PET_ICONS[petIndex(name)];
+function AgentIcon({ name }: { name: string }) {
+  const Icon = AGENT_ICONS[agentHash(name) % AGENT_ICONS.length];
   return <Icon />;
 }
 
@@ -763,27 +824,15 @@ const EFFORT_LABEL: Record<Effort, string> = {
   max: "Max",
 };
 
-function toolIcon(tool?: string) {
-  if (tool && tool.startsWith("mcp__")) return <IconBranch />;
-  switch (tool) {
-    case "read_file": return <IconFile />;
-    case "list_dir": return <IconFolder />;
-    case "apply_edit": return <IconPencil />;
-    case "create_file": return <IconFilePlus />;
-    case "run_terminal": return <IconTerminal />;
-    case "run_subagents": return <IconBranch />;
-    case "load_skill": return <IconSparkMini />;
-    default: return <IconTerminal />;
-  }
-}
-
 const TOOL_LABEL: Record<string, string> = {
   read_file: "Read file",
   list_dir: "List directory",
+  find_files: "Find files",
+  search_code: "Search code",
   apply_edit: "Edit file",
   create_file: "Create file",
   run_terminal: "Terminal command",
-  run_subagents: "Parallel sub-agents",
+  run_subagents: "Hermes · delegate to sub-agents",
   load_skill: "Load skill",
 };
 
@@ -868,9 +917,24 @@ function imageSrc(image: ImageAttachment): string {
 }
 
 /* ---------- File-edit diff ---------- */
+const DIFF_PREVIEW_LINES = 7;
 function DiffView({ info }: { info: EditInfo }) {
+  // long diffs start collapsed to a short preview, like an editor peek
+  const [open, setOpen] = useState(false);
+  const collapsible = info.lines.length > DIFF_PREVIEW_LINES;
+  const collapsed = collapsible && !open;
   return (
-    <div className="diff-block" role="group" aria-label={`Diff for ${info.path}`}>
+    <div
+      className={`diff-block ${collapsed ? "collapsed" : ""}`}
+      role="group"
+      aria-label={`Diff for ${info.path}`}
+      onClick={collapsed ? () => setOpen(true) : undefined}
+      onKeyDown={collapsed ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(true); } } : undefined}
+      tabIndex={collapsed ? 0 : undefined}
+      aria-expanded={collapsible ? open : undefined}
+      title={collapsed ? "Click to expand" : undefined}
+    >
+      {collapsed && <span className="diff-expand">Click to expand</span>}
       {info.lines.map((line, i) => {
         if (line.text === "…" && line.type === "context" && line.oldLine === undefined && line.newLine === undefined) {
           return (
@@ -918,7 +982,9 @@ export default function App() {
   const [mode, setMode] = useState<Mode>("build");
   const [alwaysAllow, setAlwaysAllow] = useState({ terminal: false, edits: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<{ baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean } | null>(null);
+  const [settings, setSettings] = useState<SettingsShape | null>(null);
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
   const [commands, setCommands] = useState<SlashCommandView[]>([]);
   const [skills, setSkills] = useState<SkillView[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -927,6 +993,18 @@ export default function App() {
   const turnStartRef = useRef<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // recording timer shown on the mic button
+  useEffect(() => {
+    if (voiceState !== "recording") return;
+    const id = setInterval(() => setVoiceSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [voiceState]);
+
+  const toggleVoice = () => {
+    if (voiceState === "idle") { setPasteError(""); send({ type: "voice", action: "start" }); }
+    else if (voiceState === "recording") send({ type: "voice", action: "stop" });
+  };
 
   useEffect(() => {
     // remove the host-rendered loading splash once React has mounted
@@ -1055,6 +1133,16 @@ export default function App() {
             return next;
           case "skills":
             setSkills(m.skills);
+            return next;
+          case "voiceState":
+            setVoiceState(m.state);
+            if (m.state === "recording") setVoiceSeconds(0);
+            if (m.error) setPasteError(m.error);
+            return next;
+          case "voiceText":
+            // dictated text is inserted for review, never auto-sent
+            setInput((value) => (value.trim() ? `${value.trimEnd()} ${m.text}` : m.text));
+            requestAnimationFrame(() => textareaRef.current?.focus());
             return next;
           default:
             return next;
@@ -1555,6 +1643,7 @@ export default function App() {
               ))}
             </div>
           )}
+          <div className="input-shell">
           <div className="attach-menu-wrap">
             {attachMenuOpen && (
               <>
@@ -1609,14 +1698,38 @@ export default function App() {
                 }
                 if (e.key === "Escape") { e.preventDefault(); setInput(""); return; }
               }
+              if (e.key === "Escape" && (voiceState === "starting" || voiceState === "recording")) {
+                e.preventDefault();
+                send({ type: "voice", action: "cancel" });
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (!streaming) submit();
               }
             }}
-            placeholder="Ask KoMind anything… Paste an image with Ctrl+V"
+            placeholder={voiceState === "recording" ? "Listening… click the mic again to finish, Esc to cancel" : voiceState === "transcribing" ? "Transcribing…" : "Ask KoMind anything… Paste an image with Ctrl+V"}
             aria-label="Message KoMind"
           />
+          <div className="voice-wrap">
+            {(voiceState === "starting" || voiceState === "recording") && (
+              <button className="icon-btn voice-cancel" onClick={() => send({ type: "voice", action: "cancel" })} title="Discard recording (Esc)" aria-label="Discard recording">
+                <IconX />
+              </button>
+            )}
+            <button
+              className={`voice-btn ${voiceState}`}
+              onClick={toggleVoice}
+              disabled={voiceState === "starting" || voiceState === "transcribing"}
+              title={voiceState === "idle" ? "Voice input: click and speak" : voiceState === "starting" ? "Opening microphone…" : voiceState === "recording" ? "Stop and transcribe" : "Transcribing…"}
+              aria-label={voiceState === "recording" ? "Stop recording and transcribe" : "Start voice input"}
+              aria-pressed={voiceState === "recording"}
+            >
+              {voiceState === "transcribing" ? <span className="spin voice-spinner" aria-hidden="true" />
+                : voiceState === "recording" ? <><span className="voice-dot" aria-hidden="true" />{`${Math.floor(voiceSeconds / 60)}:${String(voiceSeconds % 60).padStart(2, "0")}`}</>
+                  : <IconMic />}
+            </button>
+          </div>
           <button
             className={`send-btn ${streaming ? "stop" : ""}`}
             onClick={streaming ? stop : () => submit()}
@@ -1626,6 +1739,7 @@ export default function App() {
           >
             {streaming ? <span className="stop-square" aria-hidden="true" /> : <IconSend />}
           </button>
+          </div>
         </div>
         <div className="hint">
           Enter to send · Shift+Enter for a new line · Ctrl/Cmd+V to paste an image
@@ -1638,6 +1752,51 @@ export default function App() {
   );
 }
 
+/* Password input for a secret. Shows whether a key is already saved; typing a
+   value replaces it on Save, leaving it empty keeps the saved key. */
+function KeyField({ id, label, isSet, value, onChange, onKeyDown }: {
+  id: string;
+  label: string;
+  isSet: boolean;
+  value: string;
+  onChange: (v: string) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="field">
+      <label htmlFor={id}>
+        {label}
+        <span className={`apikey-status ${isSet ? "ok" : "none"}`}>{isSet ? " · saved" : " · not set"}</span>
+      </label>
+      <div className="key-input">
+        <input
+          id={id}
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={isSet ? "•••••••• saved. Type a new key to replace it" : "Paste your API key"}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setVisible((v) => !v)}
+          disabled={!value}
+          title={visible ? "Hide key" : "Show key"}
+          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+          aria-pressed={visible}
+        >
+          {visible ? <IconEyeOff /> : <IconEye />}
+        </button>
+      </div>
+      <small className="muted">Stored in VS Code's secure storage. Applied when you click Save.</small>
+    </div>
+  );
+}
+
 /* ---------- Settings popup ---------- */
 interface SettingsShape {
   baseUrl: string;
@@ -1646,6 +1805,10 @@ interface SettingsShape {
   autoApproveTerminal: boolean;
   models: string[];
   apiKeySet: boolean;
+  voiceUrl: string;
+  voiceModel: string;
+  voiceLanguage: string;
+  voiceKeySet: boolean;
 }
 
 function SettingsPanel({ settings, onClose, onAddModel }: {
@@ -1658,18 +1821,30 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
   const [autoApproveEdits, setAutoApproveEdits] = useState(settings?.autoApproveEdits ?? true);
   const [autoApproveTerminal, setAutoApproveTerminal] = useState(settings?.autoApproveTerminal ?? false);
   const [newModel, setNewModel] = useState("");
+  const [voiceUrl, setVoiceUrl] = useState(settings?.voiceUrl ?? "");
+  const [voiceModel, setVoiceModel] = useState(settings?.voiceModel ?? "");
+  const [voiceLanguage, setVoiceLanguage] = useState(settings?.voiceLanguage ?? "");
+  // new keys typed here; saved keys are never sent to the webview, so these start empty
+  const [apiKey, setApiKey] = useState("");
+  const [voiceApiKey, setVoiceApiKey] = useState("");
   const dirty = settings !== null && (
     baseUrl !== settings.baseUrl || maxTokens !== settings.maxTokens ||
-    autoApproveEdits !== settings.autoApproveEdits || autoApproveTerminal !== settings.autoApproveTerminal
+    autoApproveEdits !== settings.autoApproveEdits || autoApproveTerminal !== settings.autoApproveTerminal ||
+    voiceUrl !== settings.voiceUrl || voiceModel !== settings.voiceModel || voiceLanguage !== settings.voiceLanguage ||
+    apiKey.trim() !== "" || voiceApiKey.trim() !== ""
   );
 
   const save = () => {
     send({
       type: "updateSettings",
       baseUrl, maxTokens: Number(maxTokens), autoApproveEdits, autoApproveTerminal,
+      voiceUrl, voiceModel, voiceLanguage,
+      apiKey: apiKey.trim() || undefined,
+      voiceApiKey: voiceApiKey.trim() || undefined,
     });
     onClose();
   };
+  const saveOnEnter = (e: React.KeyboardEvent) => { if (e.key === "Enter" && dirty) save(); };
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -1679,17 +1854,14 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
           <button className="icon-btn" onClick={onClose} title="Close (Esc)"><IconX /></button>
         </div>
         <div className="settings-body">
-          <div className="field">
-            <label htmlFor="km-apikey">API key</label>
-            <div className="row">
-              <span className={`apikey-status ${settings?.apiKeySet ? "ok" : "none"}`}>
-                {settings?.apiKeySet ? "•••••••• (set)" : "Not set"}
-              </span>
-              <button onClick={() => send({ type: "setApiKey" })}>
-                {settings?.apiKeySet ? "Replace" : "Set key"}
-              </button>
-            </div>
-          </div>
+          <KeyField
+            id="km-apikey"
+            label="API key"
+            isSet={Boolean(settings?.apiKeySet)}
+            value={apiKey}
+            onChange={setApiKey}
+            onKeyDown={saveOnEnter}
+          />
           <div className="field">
             <label htmlFor="km-baseurl">API base URL (Anthropic-compatible)</label>
             <input id="km-baseurl" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.justwoker.icu" />
@@ -1715,6 +1887,35 @@ function SettingsPanel({ settings, onClose, onAddModel }: {
                 <small>When off, every command needs approval</small>
               </span>
             </label>
+          </div>
+          <div className="settings-section"><IconMic /> Voice input</div>
+          <div className="field">
+            <label htmlFor="km-voiceurl">Transcription URL</label>
+            <input
+              id="km-voiceurl"
+              value={voiceUrl}
+              onChange={(e) => setVoiceUrl(e.target.value)}
+              placeholder="https://<resource>.openai.azure.com/openai/deployments/<deployment>/audio/transcriptions?api-version=2025-03-01-preview"
+            />
+            <small className="muted">Azure AI Foundry Whisper or gpt-4o-transcribe deployment, or any OpenAI-compatible endpoint.</small>
+          </div>
+          <KeyField
+            id="km-voicekey"
+            label="Voice API key"
+            isSet={Boolean(settings?.voiceKeySet)}
+            value={voiceApiKey}
+            onChange={setVoiceApiKey}
+            onKeyDown={saveOnEnter}
+          />
+          <div className="field voice-pair">
+            <div>
+              <label htmlFor="km-voicemodel">Model (optional)</label>
+              <input id="km-voicemodel" value={voiceModel} onChange={(e) => setVoiceModel(e.target.value)} placeholder="empty for Azure deployments" />
+            </div>
+            <div>
+              <label htmlFor="km-voicelang">Language (optional)</label>
+              <input id="km-voicelang" value={voiceLanguage} onChange={(e) => setVoiceLanguage(e.target.value)} placeholder="auto, or e.g. en" maxLength={8} />
+            </div>
           </div>
           <div className="field">
             <label>Extra models</label>
@@ -1792,27 +1993,84 @@ function ThinkingCard({ card }: { card: Card }) {
     : `Thought${seconds > 0 ? ` for ${seconds}s` : ""}`;
 
   return (
-    <div className="thinking-card">
-      <button
-        type="button"
-        className="thinking-head"
-        onClick={() => { setUserToggled(true); setOpen((o) => !o); }}
-        aria-expanded={open}
-        aria-label={`${open ? "Collapse" : "Expand"} reasoning`}
-      >
-        <span className="thinking-title">
-          <img src={logoUrl} alt="" className={active ? "spin-pulse" : ""} />
+    <div className={`step ${active ? "run" : "muted"}`}>
+      <div className="step-head">
+        <button
+          type="button"
+          className="step-thought"
+          onClick={() => { setUserToggled(true); setOpen((o) => !o); }}
+          aria-expanded={open}
+          aria-label={`${label}. ${open ? "Collapse" : "Expand"} reasoning`}
+          disabled={!card.text}
+        >
           {label}
-        </span>
-        {active && <span className="thinking-meta">reasoning…</span>}
-        {!active && formatTimestamp(card.ts) && <span className="thinking-meta">{formatTimestamp(card.ts)}</span>}
-        <span className={`thinking-chevron ${open ? "expanded" : ""}`}><IconChevronDown /></span>
-      </button>
+          {card.text && <span className={`chev ${open ? "open" : ""}`}><IconChevronDown /></span>}
+        </button>
+        {!active && formatTimestamp(card.ts) && <span className="step-tail"><span className="step-time">{formatTimestamp(card.ts)}</span></span>}
+      </div>
       {open && card.text && (
         <div className="thinking-body" ref={bodyRef}>{card.text}</div>
       )}
     </div>
   );
+}
+
+/* Timeline verb for each built-in tool, Claude-style ("Edit path", "Search pattern"). */
+const TOOL_VERB: Record<string, string> = {
+  read_file: "Read",
+  list_dir: "List",
+  find_files: "Find",
+  search_code: "Search",
+  apply_edit: "Edit",
+  create_file: "Write",
+  run_terminal: "Terminal",
+  run_subagents: "Delegate",
+  load_skill: "Skill",
+};
+const FILE_TOOLS = new Set(["read_file", "apply_edit", "create_file"]);
+
+/** What the tool acted on: a path, glob, pattern, command, skill or agent list. */
+function toolTarget(card: Card): string {
+  const input = card.input ?? {};
+  switch (card.tool) {
+    case "read_file": case "list_dir": case "apply_edit": case "create_file": return String(input.path ?? "");
+    case "find_files": return String(input.glob ?? "");
+    case "search_code": return `${String(input.pattern ?? "")}${input.glob ? `  in ${String(input.glob)}` : ""}`;
+    case "run_terminal": return String(input.command ?? "");
+    case "load_skill": return String(input.name ?? "");
+    case "run_subagents": return Array.isArray(input.tasks) ? (input.tasks as { name?: unknown }[]).map((t) => String(t?.name ?? "agent")).join(", ") : "";
+    default: return "";
+  }
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** Output lines that are results, not "(no matches)"/"[truncated…]" notes. */
+const resultLines = (output: string) => output.split("\n").filter((l) => l.trim() && !/^[[(]/.test(l.trim())).length;
+
+/** One-line outcome under the step header, e.g. "Added 2 lines" or "12 matches". */
+function toolSubtitle(card: Card): { text: string; err?: boolean; add?: number; del?: number } {
+  if (card.approvalDone === "rejected") return { text: "Rejected", err: true };
+  if (card.pendingApproval) return { text: "Waiting for your approval" };
+  if (card.output === undefined) return { text: "Running…" };
+  if (card.ok === false) return { text: card.tool === "run_terminal" ? "Failed (non-zero exit)" : "Failed", err: true };
+  const out = card.output;
+  const info = card.editInfo;
+  switch (card.tool) {
+    case "apply_edit":
+      if (!info) return { text: "Edited" };
+      if (info.deletions === 0) return { text: `Added ${plural(info.additions, "line")}` };
+      if (info.additions === 0) return { text: `Removed ${plural(info.deletions, "line")}` };
+      return { text: "Modified", add: info.additions, del: info.deletions };
+    case "create_file": return { text: `Created · ${plural(info?.additions ?? 0, "line")}` };
+    case "read_file": return { text: `Read ${plural(out.split("\n").length, "line")}${out.includes("[truncated") ? " (truncated)" : ""}` };
+    case "list_dir": return { text: plural(resultLines(out), "entry").replace("entrys", "entries") };
+    case "find_files": return { text: out.startsWith("(no files") ? "No files matched" : plural(resultLines(out), "file") };
+    case "search_code": return { text: out.startsWith("(no matches") ? "No matches" : plural(resultLines(out), "match").replace("matchs", "matches") };
+    case "run_terminal": return { text: "Completed" };
+    case "run_subagents": return { text: card.subagents ? `${plural(card.subagents.length, "sub-agent")} finished` : "Done" };
+    case "load_skill": return { text: "Instructions loaded" };
+    default: return { text: "Done" };
+  }
 }
 
 function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
@@ -1836,8 +2094,7 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
 
   if (card.kind === "assistant") {
     return (
-      <div className="assistant">
-        {timestamp && <span className="step-ts">{timestamp}</span>}
+      <div className="step assistant" title={timestamp || undefined}>
         <Markdown text={card.text ?? ""} />
       </div>
     );
@@ -1859,94 +2116,93 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
   }
   if (card.kind === "error") {
     return (
-      <div className="error-card" role="alert">
-        <IconAlert />
-        <span className="msg">
-          {timestamp && <span className="step-ts">{timestamp}</span>}
-          {card.text}
-        </span>
-        <button onClick={onRetry} title="Retry the last request"><IconRotate /> Retry</button>
+      <div className="step err" title={timestamp || undefined}>
+        <div className="error-card" role="alert">
+          <span className="msg">{card.text}</span>
+          <button onClick={onRetry} title="Retry the last request"><IconRotate /> Retry</button>
+        </div>
       </div>
     );
   }
 
-  /* Tool card */
+  /* Tool step */
   const rejected = card.approvalDone === "rejected";
   const awaiting = Boolean(card.pendingApproval);
   const running = card.output === undefined && !awaiting && !rejected;
-  const doneOk = card.output !== undefined && card.ok === true;
-  const doneErr = (card.output !== undefined && card.ok === false) || rejected;
-  const statusClass = awaiting ? "awaiting" : running ? "running" : doneErr ? "done-err" : doneOk ? "done-ok" : "";
-  const statusIcon = awaiting ? <IconClock /> : running ? <img src={logoUrl} alt="" className="komind-status-logo" /> : rejected ? <IconX /> : doneErr ? <IconX /> : <IconCheck />;
-  const statusText = awaiting ? "Awaiting approval" : running ? "In progress" : rejected ? "Rejected" : doneErr ? "Failed" : "Done";
-  const statusColor = awaiting ? "var(--km-warn)" : doneErr || rejected ? "var(--vscode-errorForeground)" : doneOk ? "var(--km-accent)" : "var(--vscode-foreground)";
+  const failed = (card.output !== undefined && card.ok === false) || rejected;
+  const dot = awaiting ? "wait" : running ? "run" : failed ? "err" : "ok";
 
-  const args = card.input?.path ? String(card.input.path) : "";
   const editInfo = card.editInfo;
   const isFileEdit = card.tool === "apply_edit" || card.tool === "create_file";
-  const summary = card.tool === "run_terminal"
-    ? String(card.input?.command ?? "")
-    : card.tool === "run_subagents"
-      ? (Array.isArray(card.input?.tasks) ? (card.input!.tasks as { name?: unknown }[]).map((t) => String(t?.name ?? "agent")).join(", ") : "")
-      : args;
+  const isTerminal = card.tool === "run_terminal";
+  const path = card.input?.path ? String(card.input.path) : "";
+  const target = toolTarget(card);
+  const sub = toolSubtitle(card);
+  // raw output is folded behind the chevron; terminal and edit steps show their own body
+  const hasOutput = card.output !== undefined && !isTerminal && !(isFileEdit && editInfo);
+  const verb = TOOL_VERB[card.tool ?? ""] ?? toolLabel(card.tool);
 
   return (
-    <div className={`tool-card ${statusClass}`}>
-      <button
-        type="button"
-        className="tool-head"
-        onClick={() => setExpanded((open) => !open)}
-        aria-expanded={expanded}
-        aria-label={`${expanded ? "Collapse" : "Expand"} ${toolLabel(card.tool)} details`}
-      >
-        {toolIcon(card.tool)}
-        <span className="tool-name">{toolLabel(card.tool)}</span>
-        <span className="tool-status" style={{ color: statusColor }}>
-          {statusIcon} {statusText}
-        </span>
-        {timestamp && <span className="thinking-meta" style={{ marginLeft: 8 }}>{timestamp}</span>}
-        <span className={`tool-chevron ${expanded ? "expanded" : ""}`}><IconChevronDown /></span>
-      </button>
-      {summary && (
-        <div className="tool-summary" title={summary}>
-          {summary}
-          {isFileEdit && editInfo && (
-            <span className="diff-stat">
-              {editInfo.additions > 0 && <span className="add">+{editInfo.additions}</span>}
-              {editInfo.deletions > 0 && <span className="del">{"\u2212"}{editInfo.deletions}</span>}
-            </span>
+    <div className={`step ${dot}`}>
+      <div className="step-head">
+        <span className="step-verb">{verb}</span>
+        {FILE_TOOLS.has(card.tool ?? "") && path
+          ? <button className="step-target" onClick={() => send({ type: "openFile", path, view: "file" })} title={`Open ${path}`}>{path}</button>
+          : target && !isTerminal && <span className="step-target" title={target}>{target}</span>}
+        <span className="step-tail">
+          {timestamp && <span className="step-time">{timestamp}</span>}
+          {isFileEdit && path && card.output !== undefined && card.ok !== false && (
+            <button className="icon-btn" onClick={() => send({ type: "openFile", path, view: "diff" })} title="Open a diff against the last committed version" aria-label={`Open diff for ${path}`}>
+              <IconDiff />
+            </button>
           )}
-        </div>
-      )}
-      {isFileEdit && args && (card.output !== undefined) && (
-        <div className="diff-actions">
-          <button onClick={() => send({ type: "openFile", path: args, view: "file" })} title="Open this file in the editor">
-            <IconOpen /> Open file
-          </button>
-          <button onClick={() => send({ type: "openFile", path: args, view: "diff" })} title="Open a diff against the last committed version">
-            <IconDiff /> Open diff
-          </button>
+          {hasOutput && (
+            <button className="icon-btn" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-label={`${expanded ? "Hide" : "Show"} ${verb} output`} title={expanded ? "Hide output" : "Show output"}>
+              <span className={`chev ${expanded ? "open" : ""}`}><IconChevronDown /></span>
+            </button>
+          )}
+        </span>
+      </div>
+      <div className={`step-sub ${sub.err ? "err" : ""}`}>
+        {sub.text}
+        {sub.add !== undefined && <> · <span className="add">+{sub.add}</span> <span className="del">{"−"}{sub.del}</span></>}
+      </div>
+      {isTerminal && target && (
+        <div className="step-body io-block" role="group" aria-label="Terminal command and output">
+          <div className="io-row"><span className="io-label">IN</span><pre className="io-text">{target}</pre></div>
+          {card.output !== undefined && <div className="io-row"><span className="io-label">OUT</span><pre className="io-text">{card.output}</pre></div>}
         </div>
       )}
       {isFileEdit && editInfo && editInfo.lines.length > 0 && (
-        <DiffView info={editInfo} />
+        <div className="step-body"><DiffView info={editInfo} /></div>
       )}
       {card.tool === "run_subagents" && card.subagents && card.subagents.length > 0 && (
         <div className="subagents">
+          <div className="subagent-row orchestrator">
+            <span className="subagent-pet" title="Hermes"><AgentNetwork /></span>
+            <span className="subagent-name">
+              Hermes
+              <span className="subagent-kind"> · Orchestrator · dispatched {card.subagents.length} agent{card.subagents.length === 1 ? "" : "s"}</span>
+            </span>
+            <span className="subagent-state">
+              {card.subagents.filter((a) => a.status !== "running").length}/{card.subagents.length} finished
+            </span>
+          </div>
           {card.subagents.map((agent, i) => {
             const working = agent.status === "running";
             const stateIcon = working
               ? <img src={logoUrl} alt="" className="komind-status-logo" />
               : agent.status === "done" ? <IconCheck /> : <IconX />;
             const stateText = working ? "Working…" : agent.status === "done" ? "Done" : "Failed";
+            const codename = agentCodename(agent.type, card.subagents!.slice(0, i).filter((a) => (a.type ?? "general") === (agent.type ?? "general")).length);
             return (
               <div key={`${agent.name}-${i}`} className={`subagent-row ${agent.status}`}>
-                <span className={`subagent-pet ${working ? "working" : ""}`} title={PET_LABELS[petIndex(agent.name)]}>
-                  <PetIcon name={agent.name} />
+                <span className={`subagent-pet ${working ? "working" : ""}`} title={codename}>
+                  <AgentIcon name={agent.name} />
                 </span>
                 <span className="subagent-name" title={agent.name}>
                   {agent.name}
-                  <span className="subagent-kind"> · {PET_LABELS[petIndex(agent.name)]}</span>
+                  <span className="subagent-kind"> · {codename} · {AGENT_TYPE_LABEL[agent.type ?? "general"] ?? agent.type}{agent.skill ? ` · skill: ${agent.skill}` : ""}</span>
                 </span>
                 <span className={`subagent-state ${agent.status}`}>
                   {stateIcon} {stateText}
@@ -1956,13 +2212,13 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
           })}
         </div>
       )}
-      {expanded && card.pendingApproval && (
-        <div className="tool-body">
+      {card.pendingApproval && !isTerminal && (
+        <div className="step-body">
           <div className="cmd-block">{card.pendingApproval}</div>
         </div>
       )}
       {card.pendingApproval && (
-        <div className="tool-body">
+        <div className="step-body">
           <div className="approval-row">
             <button className="approve" onClick={() => send({ type: "approve", callId: card.callId!, approved: true })} title="Approve (A)">
               <IconCheck /> Approve <span className="kbd">A</span>
@@ -1976,8 +2232,8 @@ function CardView({ card, onRetry }: { card: Card; onRetry: () => void }) {
           </div>
         </div>
       )}
-      {expanded && card.output !== undefined && !(isFileEdit && editInfo) && (
-        <div className="tool-body">
+      {expanded && hasOutput && (
+        <div className="step-body">
           <pre className="tool-output">{card.output}</pre>
         </div>
       )}

@@ -17,6 +17,7 @@ function mockCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     return {
         readFile: vi.fn(async () => ""),
         listDir: vi.fn(async () => []),
+        findFiles: async () => [],
         applyEdit: vi.fn(async () => ({ before: "", after: "" })),
         createFile: vi.fn(async () => { }),
         runTerminal: vi.fn(async () => ({ exitCode: 0 })),

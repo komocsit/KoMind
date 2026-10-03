@@ -7,6 +7,7 @@ function mockCtx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     readFile: vi.fn(async () => "file contents"),
     listDir: vi.fn(async () => ["a.txt", "b/"]),
+    findFiles: vi.fn(async () => ["src/a.ts", "src/b.ts"]),
     applyEdit: vi.fn(async () => ({ before: "old contents", after: "new contents" })),
     createFile: vi.fn(async () => { }),
     runTerminal: vi.fn(async () => ({ exitCode: 0 })),
@@ -35,6 +36,30 @@ describe("executeTool", () => {
   it("read_file returns contents", async () => {
     const r = await executeTool("read_file", { path: "a.txt" }, "c1", mockCtx());
     expect(r).toEqual({ ok: true, output: "file contents" });
+  });
+  it("read_file truncates huge files", async () => {
+    const r = await executeTool("read_file", { path: "big.js" }, "c1", mockCtx({ readFile: async () => "x".repeat(200_000) }));
+    expect(r.ok).toBe(true);
+    expect(r.output.length).toBeLessThan(101_000);
+    expect(r.output).toContain("[truncated");
+  });
+  it("find_files lists matches sorted", async () => {
+    const r = await executeTool("find_files", { glob: "src/**/*.ts" }, "c1", mockCtx({ findFiles: async () => ["src/b.ts", "src/a.ts"] }));
+    expect(r).toEqual({ ok: true, output: "src/a.ts\nsrc/b.ts" });
+  });
+  it("search_code returns path:line matches and skips binaries", async () => {
+    const files: Record<string, string> = { a: "const foo = 1;\nbar();\nfoo();", b: "foo\0binary" };
+    const ctx = mockCtx({
+      findFiles: async () => ["src/a.ts", "src/b.ts"],
+      readFile: async (p) => files[p.includes("a.ts") ? "a" : "b"],
+    });
+    const r = await executeTool("search_code", { pattern: "foo" }, "c1", ctx);
+    expect(r).toEqual({ ok: true, output: "src/a.ts:1: const foo = 1;\nsrc/a.ts:3: foo();" });
+  });
+  it("search_code rejects invalid regex", async () => {
+    const r = await executeTool("search_code", { pattern: "(" }, "c1", mockCtx());
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("invalid regex");
   });
   it("returns error result for unknown file (model self-corrects)", async () => {
     const ctx = mockCtx({ readFile: async () => { throw new Error("ENOENT"); } });
@@ -92,7 +117,7 @@ describe("executeTool", () => {
     expect(r.ok).toBe(false);
   });
   it("exposes the tool defs for the API", () => {
-    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents", "load_skill"]);
+    expect(TOOL_DEFS.map((d) => d.name)).toEqual(["read_file", "list_dir", "find_files", "search_code", "apply_edit", "create_file", "run_terminal", "run_subagents", "load_skill"]);
   });
 
   it("run_subagents reports when sub-agents are unavailable", async () => {
@@ -128,6 +153,25 @@ describe("executeTool", () => {
     const r = await executeTool("run_subagents", { tasks: [{ name: "alpha", prompt: "p1" }, { name: "beta", prompt: "p2" }] }, "c1", mockCtx({ runSubagents }));
     expect(r.ok).toBe(false);
     expect(r.output).toContain("(failed)");
+  });
+
+  it("run_subagents passes task types through, defaulting unknown ones to general", async () => {
+    const runSubagents = vi.fn(async (tasks: { name: string }[]) => tasks.map((t) => ({ name: t.name, ok: true, output: "ok" })));
+    const r = await executeTool("run_subagents", { tasks: [{ name: "a", prompt: "p", type: "explore" }, { name: "b", prompt: "p", type: "bogus" }] }, "c1", mockCtx({ runSubagents }));
+    expect((runSubagents.mock.calls[0] as any)[0].map((t: any) => t.type)).toEqual(["explore", "general"]);
+    expect(r.output).toContain("Sub-agent: a [explore]");
+  });
+
+  it("run_subagents passes assigned skills through and rejects unknown ones before running", async () => {
+    const runSubagents = vi.fn(async (tasks: { name: string }[]) => tasks.map((t) => ({ name: t.name, ok: true, output: "ok" })));
+    const loadSkill = (n: string) => (n === "known" ? "body" : undefined);
+    const ok = await executeTool("run_subagents", { tasks: [{ name: "a", prompt: "p", skill: "known" }] }, "c1", mockCtx({ runSubagents, loadSkill }));
+    expect((runSubagents.mock.calls[0] as any)[0][0].skill).toBe("known");
+    expect(ok.output).toContain("skill: known");
+    const bad = await executeTool("run_subagents", { tasks: [{ name: "b", prompt: "p", skill: "nope" }] }, "c1", mockCtx({ runSubagents, loadSkill }));
+    expect(bad.ok).toBe(false);
+    expect(bad.output).toContain('no skill named "nope"');
+    expect(runSubagents).toHaveBeenCalledTimes(1);
   });
 
   it("run_subagents caps the number of concurrent sub-agents", async () => {

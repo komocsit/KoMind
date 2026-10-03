@@ -6,7 +6,10 @@ export interface ProviderConfig { baseUrl: string; apiKey: string; model: string
 export type StreamEvent = { type: "textDelta"; text: string } | { type: "thinkingDelta"; text: string } | { type: "toolUse"; id: string; name: string; input: Record<string, unknown> } | { type: "endTurn" };
 export type AnthropicMessage = { role: "user" | "assistant"; content: unknown[] };
 export interface AnthropicClientLike {
-  messages: { stream(params: unknown, options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
+  messages: {
+    stream(params: unknown, options?: { signal?: AbortSignal }): AsyncIterable<unknown>;
+    create?(params: unknown, options?: { signal?: AbortSignal }): Promise<{ content?: unknown[] }>;
+  };
   models?: { list(params?: unknown): Promise<{ data?: { id?: string }[] } | AsyncIterable<{ id?: string }>> };
 }
 export interface Provider {
@@ -27,6 +30,13 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener("abort", () => { clearTimeout(timer); reject(abortError()); }, { once: true });
   });
+
+  // Some Anthropic-compatible proxies accept `stream: true` but never emit
+  // content_block events (only message_start/delta/stop), so the stream yields
+  // no text or tool_use. Once we see that, fall back to a non-streaming
+  // `create` for the rest of the session — the same request returns full
+  // content. ponytail: per-session flag, re-detected next session.
+  let streamingUnsupported = false;
 
   // Retry transient failures automatically: first attempt + MAX_RETRIES retries.
   const MAX_RETRIES = 5;
@@ -55,7 +65,24 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
     // errors during iteration), so they share one scope. `emitted` reports
     // whether any content already reached the UI: once the model has started
     // streaming, retrying would duplicate output, so we do not retry then.
+    // Non-streaming path: one `create` call, then emit the full content as
+    // events so the agent/UI layer sees the same shape as a streamed turn.
+    const attemptCreate = async (): Promise<{ result: AnthropicMessage[]; emitted: boolean }> => {
+      if (signal?.aborted) throw abortError();
+      const msg = await client.messages.create!({ ...params, stream: false }, { signal });
+      const blocks = Array.isArray(msg?.content) ? msg.content : [];
+      const content: unknown[] = [];
+      for (const b of blocks as any[]) {
+        if (b?.type === "text" && b.text) { content.push({ type: "text", text: b.text }); onEvent({ type: "textDelta", text: b.text }); }
+        else if (b?.type === "thinking" && b.thinking) { onEvent({ type: "thinkingDelta", text: b.thinking }); }
+        else if (b?.type === "tool_use") { const t = { id: b.id, name: b.name, input: b.input ?? {} }; content.push({ type: "tool_use", ...t }); onEvent({ type: "toolUse", ...t }); }
+      }
+      onEvent({ type: "endTurn" });
+      return { result: [{ role: "assistant", content }], emitted: content.length > 0 };
+    };
+
     const attemptStream = async (): Promise<{ result: AnthropicMessage[]; emitted: boolean }> => {
+      if (streamingUnsupported && client.messages.create) return attemptCreate();
       if (signal?.aborted) throw abortError();
       const stream = client.messages.stream(params, { signal });
 
@@ -102,6 +129,13 @@ export function createProvider(cfg: ProviderConfig, sdk?: AnthropicClientLike): 
         throw e;
       }
       flushTool();
+
+      // Proxy accepted the stream but sent no content blocks: switch to the
+      // non-streaming path for this and all later turns in the session.
+      if (!text && toolUses.length === 0 && !emitted && client.messages.create) {
+        streamingUnsupported = true;
+        return attemptCreate();
+      }
 
       const content: unknown[] = [];
       if (text) content.push({ type: "text", text });

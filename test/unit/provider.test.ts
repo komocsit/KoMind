@@ -157,6 +157,29 @@ describe("createProvider.streamTurn", () => {
     expect(receivedSignal).toBe(controller.signal);
   });
 
+  it("falls back to non-streaming create when the stream sends no content blocks", async () => {
+    // Proxy accepts stream:true but emits only message_start/delta/stop.
+    const create = vi.fn(async () => ({ content: [{ type: "text", text: "real answer" }] }));
+    let streamCalls = 0;
+    const sdk = {
+      messages: {
+        stream: vi.fn(() => { streamCalls++; return (async function* () { yield { type: "message_stop" }; })(); }),
+        create,
+      },
+    } as unknown as AnthropicClientLike;
+    const provider = createProvider(cfg, sdk);
+    const events1: unknown[] = [];
+    await provider.streamTurn([], [], (e) => events1.push(e));
+    expect(events1).toContainEqual({ type: "textDelta", text: "real answer" });
+    expect(create).toHaveBeenCalledTimes(1);
+    // second turn skips the dead stream entirely
+    const events2: unknown[] = [];
+    await provider.streamTurn([], [], (e) => events2.push(e));
+    expect(events2).toContainEqual({ type: "textDelta", text: "real answer" });
+    expect(streamCalls).toBe(1); // not called again
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it("setKey replaces the client and the next call uses it", async () => {
     const sdkA = fakeSdk([{ type: "content_block_delta", delta: { type: "text_delta", text: "fromA" } }, { type: "message_stop" }]);
     const sdkB = fakeSdk([{ type: "content_block_delta", delta: { type: "text_delta", text: "fromB" } }, { type: "message_stop" }]);

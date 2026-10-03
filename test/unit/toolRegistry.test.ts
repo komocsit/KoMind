@@ -6,6 +6,7 @@ function mockCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     return {
         readFile: vi.fn(async () => "file contents"),
         listDir: vi.fn(async () => ["a.txt"]),
+        findFiles: async () => [],
         applyEdit: vi.fn(async () => ({ before: "", after: "" })),
         createFile: vi.fn(async () => { }),
         runTerminal: vi.fn(async () => ({ exitCode: 0 })),
@@ -30,7 +31,7 @@ describe("ToolRegistry", () => {
     it("defaults to the built-in tool provider", () => {
         const reg = new ToolRegistry();
         const names = reg.listTools().map((t) => t.name);
-        expect(names).toEqual(["read_file", "list_dir", "apply_edit", "create_file", "run_terminal", "run_subagents", "load_skill"]);
+        expect(names).toEqual(["read_file", "list_dir", "find_files", "search_code", "apply_edit", "create_file", "run_terminal", "run_subagents", "load_skill"]);
     });
 
     it("filters tools by the allowed list (plan mode)", () => {

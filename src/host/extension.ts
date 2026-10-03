@@ -4,13 +4,14 @@ import * as cp from "child_process";
 import { createProvider, type Provider } from "./provider";
 import { AgentSession, messagesFromEvents } from "./agent";
 import { SessionStore } from "./store";
-import { runSubagents } from "./subagent";
+import { runSubagents, ORCHESTRATOR_PROMPT } from "./subagent";
 import { ToolRegistry } from "./toolRegistry";
 import { McpManager, type McpServerConfig, isMcpToolName } from "./mcp";
 import { SkillManager, discoverSkills, type SkillFs, type Skill } from "./skills";
 import { CommandRegistry, loadPlugins } from "./plugins";
 import { parseImport, type ImportedConversation } from "./sessionImport";
 import { ApprovalManager } from "./approvals";
+import { Recorder, transcribe, MAX_RECORDING_MS } from "./voice";
 import type { ToolContext } from "./tools";
 import { resolvePath } from "./tools";
 import type { HostToWebviewMsg, WebviewToHostMsg, ToolName, Effort, Mode, FileAttachment, ImageAttachment, EditInfo } from "../shared/protocol";
@@ -40,6 +41,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("koMind.newSession", () => provider.newSession()),
     vscode.commands.registerCommand("koMind.resetPermissions", () => provider.resetPermissions()),
     vscode.commands.registerCommand("koMind.importSession", () => provider.importSession()),
+    vscode.commands.registerCommand("koMind.setApiKey", () => provider.promptApiKey()),
+    vscode.commands.registerCommand("koMind.setVoiceApiKey", () => provider.promptVoiceApiKey()),
     { dispose: () => void provider.dispose() },
   );
 }
@@ -64,6 +67,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private readonly skills = new SkillManager();
   private readonly commands = new CommandRegistry();
   private pluginSystemPrompts: string[] = [];
+  private readonly recorder = new Recorder();
+  private voiceTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly context: vscode.ExtensionContext) { }
 
@@ -71,37 +76,98 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   newSession() { this.startSession(); }
 
+  /** Store a key in SecretStorage. The chat key is applied immediately so open sessions use it on their next turn. */
+  private async storeKey(name: "koMind.apiKey" | "koMind.voiceApiKey", key: string): Promise<void> {
+    await this.context.secrets.store(name, key);
+    if (name === "koMind.apiKey") this.baseProvider?.setKey(key);
+  }
+
   async promptApiKey(): Promise<void> {
-    const key = await vscode.window.showInputBox({ password: true, prompt: "API key for the KoMind API" });
+    const key = (await vscode.window.showInputBox({ password: true, prompt: "API key for the KoMind API" }))?.trim();
     if (key) {
-      await this.context.secrets.store("koMind.apiKey", key);
+      await this.storeKey("koMind.apiKey", key);
       vscode.window.showInformationMessage("KoMind API key saved.");
+      this.postSettings();
+    }
+  }
+
+  async promptVoiceApiKey(): Promise<void> {
+    const key = (await vscode.window.showInputBox({ password: true, prompt: "API key for voice transcription (Azure AI Foundry / Azure OpenAI key, or OpenAI-compatible key)" }))?.trim();
+    if (key) {
+      await this.storeKey("koMind.voiceApiKey", key);
+      vscode.window.showInformationMessage("KoMind voice API key saved.");
+      this.postSettings();
     }
   }
 
   private postSettings() {
     const cfg = vscode.workspace.getConfiguration("koMind");
-    this.post({
+    const snapshot = (apiKeySet: boolean, voiceKeySet: boolean) => this.post({
       type: "settings",
       baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
       maxTokens: cfg.get("maxTokens", 4096),
       autoApproveEdits: cfg.get("autoApproveEdits", true),
       autoApproveTerminal: cfg.get("autoApproveTerminal", false),
       models: this.extraModels(),
-      apiKeySet: false,
+      apiKeySet,
+      voiceUrl: cfg.get("voice.transcriptionUrl", ""),
+      voiceModel: cfg.get("voice.model", ""),
+      voiceLanguage: cfg.get("voice.language", ""),
+      voiceKeySet,
     });
-    // apiKeySet needs an async check — send a corrected snapshot after
-    void this.context.secrets.get("koMind.apiKey").then((key) => {
-      this.post({
-        type: "settings",
-        baseUrl: cfg.get("baseUrl", "https://api.justwoker.icu"),
-        maxTokens: cfg.get("maxTokens", 4096),
-        autoApproveEdits: cfg.get("autoApproveEdits", true),
-        autoApproveTerminal: cfg.get("autoApproveTerminal", false),
-        models: this.extraModels(),
-        apiKeySet: Boolean(key),
+    snapshot(false, false);
+    // key presence needs an async check — send a corrected snapshot after
+    void Promise.all([this.context.secrets.get("koMind.apiKey"), this.context.secrets.get("koMind.voiceApiKey")])
+      .then(([key, voiceKey]) => snapshot(Boolean(key), Boolean(voiceKey)));
+  }
+
+  /** Start/stop/cancel voice input. Recording happens in the host because webviews cannot open the microphone. */
+  private async onVoice(action: "start" | "stop" | "cancel") {
+    if (action === "cancel") {
+      clearTimeout(this.voiceTimer);
+      this.recorder.cancel();
+      this.post({ type: "voiceState", state: "idle" });
+      return;
+    }
+    if (action === "start") {
+      if (this.recorder.active) return;
+      const cfg = vscode.workspace.getConfiguration("koMind");
+      const url = cfg.get<string>("voice.transcriptionUrl", "").trim();
+      const apiKey = await this.context.secrets.get("koMind.voiceApiKey");
+      if (!url || !apiKey) {
+        this.post({ type: "voiceState", state: "idle", error: "Voice input isn't set up yet. Open Settings (gear icon) → Voice input to add your transcription URL and key." });
+        return;
+      }
+      this.post({ type: "voiceState", state: "starting" });
+      try {
+        await this.recorder.start();
+      } catch (e) {
+        this.post({ type: "voiceState", state: "idle", error: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+      // cancelled while the mic was opening
+      if (!this.recorder.active) return;
+      this.post({ type: "voiceState", state: "recording" });
+      this.voiceTimer = setTimeout(() => void this.onVoice("stop"), MAX_RECORDING_MS);
+      return;
+    }
+    clearTimeout(this.voiceTimer);
+    if (!this.recorder.active) return;
+    this.post({ type: "voiceState", state: "transcribing" });
+    try {
+      const wav = await this.recorder.stop();
+      const cfg = vscode.workspace.getConfiguration("koMind");
+      const text = await transcribe(wav, {
+        url: cfg.get<string>("voice.transcriptionUrl", "").trim(),
+        apiKey: (await this.context.secrets.get("koMind.voiceApiKey")) ?? "",
+        model: cfg.get<string>("voice.model", "").trim(),
+        language: cfg.get<string>("voice.language", "").trim(),
       });
-    });
+      if (text) this.post({ type: "voiceText", text });
+      this.post({ type: "voiceState", state: "idle", error: text ? undefined : "No speech was recognized. Try again a little closer to the microphone." });
+    } catch (e) {
+      this.post({ type: "voiceState", state: "idle", error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   resetPermissions() {
@@ -121,7 +187,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     this.approvals = new ApprovalManager((msg) => this.post(msg));
 
     const cfg = vscode.workspace.getConfiguration("koMind");
-    const settingsModel = cfg.get("model", "gpt-5.6-sol");
+    const settingsModel = cfg.get("model", "claude-opus-4-8");
     this.currentModel = this.context.workspaceState.get<string>("koMind.model") ?? settingsModel;
     const savedEffort = this.context.workspaceState.get<string>("koMind.effort");
     const settingsEffort = cfg.get<string>("effort", "high");
@@ -258,6 +324,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return sections.length > 0 ? sections.join("\n\n") : undefined;
   }
 
+  /** Top-level sessions act as the orchestrator, except in plan mode where they cannot delegate. */
+  private mainSystemPrompt(): string | undefined {
+    if (this.mode === "plan") return this.systemPrompt();
+    return [ORCHESTRATOR_PROMPT, this.systemPrompt()].filter(Boolean).join("\n\n");
+  }
+
   /**
    * Connect all MCP servers listed in `koMind.mcpServers` and register each
    * server's tools in the shared registry. Connections run concurrently and
@@ -316,7 +388,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** plan mode: sessions may only use read-only tools; build mode: all tools. */
   private applyMode() {
-    const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "load_skill"] : null;
+    const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "find_files", "search_code", "load_skill"] : null;
     for (const session of this.sessions.values()) session.allowedTools = allowed;
   }
 
@@ -336,7 +408,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       async streamTurn(messages, tools, onEvent, signal, system) {
         if (!keyCached) {
           keyCached = (await secrets.get("koMind.apiKey")) ?? null;
-          if (!keyCached) throw new Error("No API key set. Run command 'KoMind: Set API Key'.");
+          if (!keyCached) throw new Error("No API key set. Open Settings (gear icon) and enter your API key.");
           baseProvider.setKey(keyCached);
         }
         return baseProvider.streamTurn(messages, tools, onEvent, signal, system);
@@ -359,7 +431,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       turnComplete: () => this.post({ type: "turnComplete", sessionId: id }),
       turnStopped: () => this.post({ type: "turnStopped", sessionId: id }),
     };
-    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(provider), store: this.store, ui, initialMessages, registry: this.registry, system: () => this.systemPrompt() });
+    return new AgentSession({ sessionId: id, provider, ctx: this.makeToolContext(provider), store: this.store, ui, initialMessages, registry: this.registry, system: () => this.mainSystemPrompt() });
   }
 
   private makeToolContext(provider?: Provider): ToolContext {
@@ -370,6 +442,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       async listDir(p) {
         const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(p));
         return entries.map(([name, type]) => type === vscode.FileType.Directory ? name + "/" : name);
+      },
+      async findFiles(glob, maxResults) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) throw new Error("No workspace folder open.");
+        // ponytail: fixed exclude list + files.exclude, not .gitignore; switch to bundled ripgrep if other ignored dirs get noisy
+        const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, glob), "**/{node_modules,.git,dist,out}/**", maxResults);
+        return uris.map((u) => vscode.workspace.asRelativePath(u, false));
       },
       async applyEdit(p, oldString, newString) {
         const uri = vscode.Uri.file(p);
@@ -444,8 +523,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       // never receive a runSubagents context, so nesting is impossible.
       runSubagents: provider
         ? (tasks, signal, onStatus) => {
-          const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "load_skill"] : null;
-          return runSubagents(tasks, { provider, ctx: this.makeToolContext(), allowedTools: allowed, onStatus, registry: this.registry }, signal);
+          const allowed: ToolName[] | null = this.mode === "plan" ? ["read_file", "list_dir", "find_files", "search_code", "load_skill"] : null;
+          return runSubagents(tasks, { provider, ctx: this.makeToolContext(), allowedTools: allowed, onStatus, registry: this.registry, system: this.systemPrompt() }, signal);
         }
         : undefined,
       // Skills are available to top-level sessions and sub-agents alike so
@@ -621,14 +700,20 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (m.autoApproveEdits !== undefined) await cfg.update("autoApproveEdits", m.autoApproveEdits, targets);
         if (m.autoApproveTerminal !== undefined) await cfg.update("autoApproveTerminal", m.autoApproveTerminal, targets);
+        if (m.voiceUrl !== undefined) await cfg.update("voice.transcriptionUrl", m.voiceUrl.trim(), targets);
+        if (m.voiceModel !== undefined) await cfg.update("voice.model", m.voiceModel.trim(), targets);
+        if (m.voiceLanguage !== undefined) await cfg.update("voice.language", m.voiceLanguage.trim(), targets);
+        // keys are only sent when the user typed a new one; empty means "keep the saved key"
+        if (m.apiKey?.trim()) await this.storeKey("koMind.apiKey", m.apiKey.trim());
+        if (m.voiceApiKey?.trim()) await this.storeKey("koMind.voiceApiKey", m.voiceApiKey.trim());
         this.postSettings();
         break;
       }
       case "setApiKey": {
         await this.promptApiKey();
-        this.postSettings();
         break;
       }
+      case "voice": await this.onVoice(m.action); break;
       case "setMode": {
         this.mode = m.mode;
         void this.context.workspaceState.update("koMind.mode", m.mode);
@@ -928,6 +1013,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Disconnect all MCP servers when the extension is torn down. */
   async dispose(): Promise<void> {
+    clearTimeout(this.voiceTimer);
+    this.recorder.cancel();
     await this.mcp.disconnectAll();
   }
 }

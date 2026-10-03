@@ -1,4 +1,4 @@
-export type ToolName = "read_file" | "list_dir" | "apply_edit" | "create_file" | "run_terminal" | "run_subagents" | "load_skill";
+export type ToolName = "read_file" | "list_dir" | "find_files" | "search_code" | "apply_edit" | "create_file" | "run_terminal" | "run_subagents" | "load_skill";
 
 /**
  * A tool identifier as it appears in messages. Built-in tools use the fixed
@@ -36,8 +36,14 @@ export type Mode = "plan" | "build";
 export type SubagentStatus = "running" | "done" | "failed";
 
 /** Live status of a single sub-agent spawned by a `run_subagents` call. */
+/** Task type of a sub-agent; selects its tools and instructions. */
+export type SubagentType = "general" | "explore" | "plan" | "review" | "test" | "debug" | "docs";
+
 export interface SubagentStatusView {
   name: string;
+  type?: SubagentType;
+  /** Skill preloaded into the sub-agent, if the orchestrator assigned one. */
+  skill?: string;
   status: SubagentStatus;
 }
 
@@ -72,6 +78,8 @@ export interface SkillView {
   description: string;
 }
 
+export type VoiceState = "idle" | "starting" | "recording" | "transcribing";
+
 export type HostToWebviewMsg =
   | { type: "textDelta"; sessionId: string; text: string }
   | { type: "thinkingDelta"; sessionId: string; text: string }
@@ -87,7 +95,10 @@ export type HostToWebviewMsg =
   | { type: "sessionList"; sessions: { id: string; firstUserMessage: string; ts: number; archived: boolean }[] }
   | { type: "loadEvents"; sessionId: string; events: SessionEvent[] }
   | { type: "config"; model: string; models: string[]; effort: Effort; mode: Mode; alwaysAllow: { terminal: boolean; edits: boolean } }
-  | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean }
+  | { type: "settings"; baseUrl: string; maxTokens: number; autoApproveEdits: boolean; autoApproveTerminal: boolean; models: string[]; apiKeySet: boolean; voiceUrl: string; voiceModel: string; voiceLanguage: string; voiceKeySet: boolean }
+  /** Voice input lifecycle: starting (mic opening) → recording → transcribing → idle. */
+  | { type: "voiceState"; state: VoiceState; error?: string }
+  | { type: "voiceText"; text: string }
   | { type: "attachments"; files: FileAttachment[]; images: ImageAttachment[]; warning?: string }
   | { type: "attachmentError"; message: string }
   | { type: "importResult"; ok: boolean; message: string; count?: number }
@@ -113,8 +124,9 @@ export type WebviewToHostMsg =
   | { type: "addModel"; model: string }
   | { type: "removeModel"; model: string }
   | { type: "requestSettings" }
-  | { type: "updateSettings"; baseUrl?: string; maxTokens?: number; autoApproveEdits?: boolean; autoApproveTerminal?: boolean }
+  | { type: "updateSettings"; baseUrl?: string; maxTokens?: number; autoApproveEdits?: boolean; autoApproveTerminal?: boolean; voiceUrl?: string; voiceModel?: string; voiceLanguage?: string; /** new keys typed in Settings; stored in SecretStorage, never echoed back */ apiKey?: string; voiceApiKey?: string }
   | { type: "setApiKey" }
+  | { type: "voice"; action: "start" | "stop" | "cancel" }
   | { type: "setEffort"; effort: Effort }
   | { type: "setMode"; mode: Mode }
   | { type: "resetPermissions" }

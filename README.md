@@ -17,7 +17,7 @@ Then open the folder in VS Code and press **F5** (Run Extension) to launch the E
 
 ## Set API key
 
-In the Extension Development Host, run the command **KoMind: Set API Key** and paste your key. It is stored securely via VS Code SecretStorage (never written to settings or disk in plaintext).
+Open KoMind **Settings** (gear icon), paste your key into **API key** and click **Save** (or run the command **KoMind: Set API Key**). A new key takes effect immediately, including in open chats. It is stored securely via VS Code SecretStorage (never written to settings or disk in plaintext).
 
 ## Settings
 
@@ -30,6 +30,25 @@ In the Extension Development Host, run the command **KoMind: Set API Key** and p
 | `koMind.autoApproveEdits` | `true` | Apply file edits automatically |
 | `koMind.autoApproveTerminal` | `false` | Require approval for terminal commands |
 | `koMind.mcpServers` | `{}` | MCP servers to connect on startup (see below) |
+| `koMind.voice.transcriptionUrl` | `""` | Speech-to-text endpoint for voice input (see below) |
+| `koMind.voice.model` | `""` | Optional `model` field for transcription requests |
+| `koMind.voice.language` | `""` | Optional spoken-language hint, e.g. `en` |
+
+## Voice input
+
+Click the mic button next to Send, speak, then click it again (it shows a red timer while recording). The transcript is inserted into the message box for review — it is never sent automatically. Esc or ✕ discards the recording; recordings stop on their own after 2 minutes.
+
+VS Code webviews cannot access the microphone, so the extension host records audio itself: on Windows through built-in Windows APIs (no installs), on macOS/Linux through `ffmpeg` (must be on PATH). The audio is sent to an OpenAI-style `audio/transcriptions` endpoint.
+
+**Azure AI Foundry setup**
+
+1. In your Foundry project, deploy a speech-to-text model such as `whisper` or `gpt-4o-transcribe`.
+2. Open KoMind **Settings → Voice input** and set the transcription URL:
+   `https://<resource>.openai.azure.com/openai/deployments/<deployment>/audio/transcriptions?api-version=2025-03-01-preview`
+   (a `*.cognitiveservices.azure.com` endpoint works too). Leave *Model* empty.
+3. Paste the resource's API key into **Voice API key** and click **Save** (or run **KoMind: Set Voice Input API Key**). It is kept in SecretStorage.
+
+Azure hosts are authenticated with the `api-key` header; other hosts (OpenAI, Groq, local Whisper servers) get `Authorization: Bearer <key>` — set *Model* (e.g. `whisper-1`) for those.
 
 ## MCP servers (external tools)
 
@@ -127,7 +146,7 @@ All sections are optional. Plugins are discovered from `<workspace>/.komind/plug
 
 ## Architecture
 
-- **Extension host** (`src/host/`): `extension.ts` (webview provider + HTML/CSP), `provider.ts` (API streaming client), `agent.ts` (agent loop, tool-call orchestration), `tools.ts` (read_file, list_dir, apply_edit, create_file, run_terminal, run_subagents), `toolRegistry.ts` (pluggable `ToolProvider` registry aggregating built-in + external tools), `mcp.ts` (MCP client manager exposing external servers as tool providers), `subagent.ts` (parallel headless sub-agents), `approvals.ts` (approval manager with 60s timeout), `store.ts` (JSON-file session persistence).
+- **Extension host** (`src/host/`): `extension.ts` (webview provider + HTML/CSP), `provider.ts` (API streaming client), `agent.ts` (agent loop, tool-call orchestration), `tools.ts` (read_file, list_dir, find_files, search_code, apply_edit, create_file, run_terminal, run_subagents, load_skill), `toolRegistry.ts` (pluggable `ToolProvider` registry aggregating built-in + external tools), `mcp.ts` (MCP client manager exposing external servers as tool providers), `subagent.ts` (parallel headless sub-agents), `approvals.ts` (approval manager with 60s timeout), `store.ts` (JSON-file session persistence).
 - **Webview** (`src/webview/`): React chat UI (`App.tsx`, `api.ts`) — streaming markdown (marked + DOMPurify), tool cards, approval buttons, session switcher.
 - **Shared** (`src/shared/`): typed `postMessage` protocol (`protocol.ts`).
 

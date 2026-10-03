@@ -27,6 +27,7 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
     return {
         readFile: async () => "file body",
         listDir: async () => ["a.txt"],
+        findFiles: async () => [],
         applyEdit: vi.fn(async () => ({ before: "", after: "" })),
     createFile: vi.fn(async () => { }),
         runTerminal: vi.fn(async () => ({ exitCode: 0 })),
@@ -98,6 +99,57 @@ describe("runSubagent", () => {
         };
         await runSubagent({ name: "x", prompt: "p" }, { provider, ctx: ctx(), allowedTools: ["read_file", "list_dir"] });
         expect(seenTools).toEqual(["read_file", "list_dir"]);
+    });
+});
+
+describe("sub-agent task types", () => {
+    function capturingProvider(seen: { tools: string[]; system?: string }): Provider {
+        return {
+            setKey() { }, setModel() { }, setEffort() { }, setBaseUrl() { }, setMaxTokens() { },
+            async listModels() { return []; },
+            async streamTurn(_messages, tools, onEvent, _signal, system) {
+                seen.tools = tools.map((t) => t.name);
+                seen.system = system;
+                onEvent({ type: "endTurn" });
+                return [{ role: "assistant", content: [{ type: "text", text: "ok" }] }];
+            },
+        };
+    }
+
+    it("explore agents are read-only and get their own instructions plus the shared system prompt", async () => {
+        const seen: { tools: string[]; system?: string } = { tools: [] };
+        await runSubagent({ name: "x", prompt: "p", type: "explore" }, { provider: capturingProvider(seen), ctx: ctx(), system: "SKILLS INDEX" });
+        expect(seen.tools).toEqual(["read_file", "list_dir", "find_files", "search_code", "load_skill"]);
+        expect(seen.system).toContain("exploration sub-agent");
+        expect(seen.system).toContain("SKILLS INDEX");
+    });
+
+    it("test agents can run the terminal but not edit", async () => {
+        const seen: { tools: string[]; system?: string } = { tools: [] };
+        await runSubagent({ name: "x", prompt: "p", type: "test" }, { provider: capturingProvider(seen), ctx: ctx() });
+        expect(seen.tools).toContain("run_terminal");
+        expect(seen.tools).not.toContain("apply_edit");
+    });
+
+    it("preloads an assigned skill's instructions into the system prompt", async () => {
+        const seen: { tools: string[]; system?: string } = { tools: [] };
+        const loadSkill = (n: string) => (n === "react-style" ? "USE HOOKS ONLY" : undefined);
+        await runSubagent({ name: "x", prompt: "p", type: "general", skill: "react-style" }, { provider: capturingProvider(seen), ctx: ctx({ loadSkill }) });
+        expect(seen.system).toContain("USE HOOKS ONLY");
+        expect(seen.system).toContain('"react-style" skill');
+    });
+
+    it("docs agents can edit files but not run the terminal", async () => {
+        const seen: { tools: string[]; system?: string } = { tools: [] };
+        await runSubagent({ name: "x", prompt: "p", type: "docs" }, { provider: capturingProvider(seen), ctx: ctx() });
+        expect(seen.tools).toContain("apply_edit");
+        expect(seen.tools).not.toContain("run_terminal");
+    });
+
+    it("type tools are intersected with mode restrictions", async () => {
+        const seen: { tools: string[]; system?: string } = { tools: [] };
+        await runSubagent({ name: "x", prompt: "p", type: "test" }, { provider: capturingProvider(seen), ctx: ctx(), allowedTools: ["read_file", "list_dir"] });
+        expect(seen.tools).toEqual(["read_file", "list_dir"]);
     });
 });
 
